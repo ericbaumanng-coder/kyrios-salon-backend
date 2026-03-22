@@ -595,3 +595,127 @@ async def get_booking_stats():
         "deposits_received": deposits_received,
         "upcoming_appointments": upcoming[:10]  # Next 10 appointments
     }
+
+
+# ============== SEED/INIT SERVICES ==============
+
+@booking_router.post("/admin/init-services")
+async def init_services():
+    """Initialize the database with all services and categories"""
+    
+    # Service Categories
+    CATEGORIES = [
+        {
+            "id": "cat_tresses",
+            "name": "Tresses & Coiffures Naturelles",
+            "name_de": "Zöpfe & Natürliche Frisuren",
+            "description": "Box braids, knotless, twists et plus",
+            "icon": "scissors",
+            "image_url": "https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?w=400",
+            "order": 1
+        },
+        {
+            "id": "cat_tissage",
+            "name": "Tissage & Pose",
+            "name_de": "Einnähen & Perückenanbringung",
+            "description": "Tissage, closure, frontale et ponytail",
+            "icon": "sparkles",
+            "image_url": "https://images.unsplash.com/photo-1595499280852-21f4f3a64400?w=400",
+            "order": 2
+        },
+        {
+            "id": "cat_locks",
+            "name": "Locks",
+            "name_de": "Dreadlocks",
+            "description": "Création et entretien de locks",
+            "icon": "crown",
+            "image_url": "https://images.unsplash.com/photo-1611175603085-e7ceaf1f8a9f?w=400",
+            "order": 3
+        },
+        {
+            "id": "cat_soins",
+            "name": "Soins & Styling",
+            "name_de": "Pflege & Styling",
+            "description": "Soins, brushing, lissage et coupe",
+            "icon": "heart",
+            "image_url": "https://images.unsplash.com/photo-1560066984-138dadb4c035?w=400",
+            "order": 4
+        }
+    ]
+
+    # All Services
+    SERVICES = [
+        # FAMILLE 1 — Tresses & Coiffures Naturelles
+        {"category_id": "cat_tresses", "name": "Box Braids S", "price": 80, "duration_minutes": 180, "description": "Petites tresses classiques - Taille courte", "order": 1},
+        {"category_id": "cat_tresses", "name": "Box Braids M", "price": 120, "duration_minutes": 240, "description": "Petites tresses classiques - Taille moyenne", "order": 2},
+        {"category_id": "cat_tresses", "name": "Box Braids L", "price": 160, "duration_minutes": 300, "description": "Petites tresses classiques - Taille longue", "order": 3},
+        {"category_id": "cat_tresses", "name": "Knotless Braids S", "price": 100, "duration_minutes": 210, "description": "Tresses sans nœud, plus légères - Courtes", "order": 4},
+        {"category_id": "cat_tresses", "name": "Knotless Braids M", "price": 140, "duration_minutes": 270, "description": "Tresses sans nœud, plus légères - Moyennes", "order": 5},
+        {"category_id": "cat_tresses", "name": "Knotless Braids L", "price": 180, "duration_minutes": 330, "description": "Tresses sans nœud, plus légères - Longues", "order": 6},
+        {"category_id": "cat_tresses", "name": "Senegalese Twists S", "price": 80, "duration_minutes": 180, "description": "Vanilles sénégalaises - Courtes", "order": 7},
+        {"category_id": "cat_tresses", "name": "Senegalese Twists M", "price": 120, "duration_minutes": 240, "description": "Vanilles sénégalaises - Moyennes", "order": 8},
+        {"category_id": "cat_tresses", "name": "Senegalese Twists L", "price": 160, "duration_minutes": 300, "description": "Vanilles sénégalaises - Longues", "order": 9},
+        {"category_id": "cat_tresses", "name": "Goddess Braids S", "price": 90, "duration_minutes": 180, "description": "Tresses déesse bohème - Courtes", "order": 10},
+        {"category_id": "cat_tresses", "name": "Goddess Braids M", "price": 130, "duration_minutes": 240, "description": "Tresses déesse bohème - Moyennes", "order": 11},
+        {"category_id": "cat_tresses", "name": "Goddess Braids L", "price": 170, "duration_minutes": 300, "description": "Tresses déesse bohème - Longues", "order": 12},
+        {"category_id": "cat_tresses", "name": "Ghana Braids S", "price": 70, "duration_minutes": 150, "description": "Tresses collées Ghana - Courtes", "order": 13},
+        {"category_id": "cat_tresses", "name": "Ghana Braids L", "price": 130, "duration_minutes": 240, "description": "Tresses collées Ghana - Longues", "order": 14},
+        {"category_id": "cat_tresses", "name": "Cornrows Simple", "price": 40, "duration_minutes": 60, "description": "Nattes collées simples", "order": 15},
+        {"category_id": "cat_tresses", "name": "Cornrows Complexes", "price": 90, "duration_minutes": 150, "description": "Nattes collées avec motifs élaborés", "order": 16},
+        
+        # FAMILLE 2 — Tissage & Pose
+        {"category_id": "cat_tissage", "name": "Tissage", "price": 80, "duration_minutes": 90, "description": "Tissage classique cousu", "order": 1},
+        {"category_id": "cat_tissage", "name": "Pose Closure", "price": 60, "duration_minutes": 90, "description": "Pose de closure", "order": 2},
+        {"category_id": "cat_tissage", "name": "Pose Frontale", "price": 80, "duration_minutes": 120, "description": "Pose de frontale lace", "order": 3},
+        {"category_id": "cat_tissage", "name": "Pose Ponytail", "price": 50, "duration_minutes": 60, "description": "Pose de queue de cheval", "order": 4},
+        {"category_id": "cat_tissage", "name": "360 Frontale / Full Lace", "price": 120, "duration_minutes": 150, "description": "Pose complète 360 ou full lace", "order": 5},
+        
+        # FAMILLE 3 — Locks
+        {"category_id": "cat_locks", "name": "Locks Start", "price": 150, "duration_minutes": 180, "description": "Création de locks - Démarrage", "order": 1},
+        {"category_id": "cat_locks", "name": "Locks Maintenance", "price": 60, "duration_minutes": 90, "description": "Entretien régulier des locks", "order": 2},
+        {"category_id": "cat_locks", "name": "Locks Retouch", "price": 40, "duration_minutes": 60, "description": "Retouche racines des locks", "order": 3},
+        
+        # FAMILLE 4 — Soins & Styling
+        {"category_id": "cat_soins", "name": "Soin Deep Treatment", "price": 50, "duration_minutes": 60, "description": "Soin profond hydratant", "order": 1},
+        {"category_id": "cat_soins", "name": "Brushing", "price": 30, "duration_minutes": 45, "description": "Brushing lisse ou wavy", "order": 2},
+        {"category_id": "cat_soins", "name": "Dégradé", "price": 35, "duration_minutes": 45, "description": "Coupe dégradée", "order": 3},
+        {"category_id": "cat_soins", "name": "Lissage Kératine", "price": 120, "duration_minutes": 120, "description": "Lissage brésilien à la kératine", "order": 4},
+        {"category_id": "cat_soins", "name": "Coupe + Soin", "price": 45, "duration_minutes": 60, "description": "Coupe avec soin inclus", "order": 5},
+    ]
+
+    # Default availability (Wednesday to Saturday, 7:30 - 18:30)
+    AVAILABILITY = [
+        {"id": str(uuid.uuid4()), "day_of_week": 2, "start_time": "07:30", "end_time": "18:30", "is_active": True},  # Wednesday
+        {"id": str(uuid.uuid4()), "day_of_week": 3, "start_time": "07:30", "end_time": "18:30", "is_active": True},  # Thursday
+        {"id": str(uuid.uuid4()), "day_of_week": 4, "start_time": "07:30", "end_time": "18:30", "is_active": True},  # Friday
+        {"id": str(uuid.uuid4()), "day_of_week": 5, "start_time": "07:30", "end_time": "18:30", "is_active": True},  # Saturday
+    ]
+    
+    try:
+        # Clear existing data
+        await db.service_categories.delete_many({})
+        await db.services.delete_many({})
+        await db.availability.delete_many({})
+        
+        # Insert categories
+        await db.service_categories.insert_many(CATEGORIES)
+        
+        # Insert services with generated IDs
+        for service in SERVICES:
+            service["id"] = str(uuid.uuid4())
+            service["is_active"] = True
+        await db.services.insert_many(SERVICES)
+        
+        # Insert availability
+        await db.availability.insert_many(AVAILABILITY)
+        
+        return {
+            "success": True,
+            "message": "Services initialisés avec succès",
+            "categories_count": len(CATEGORIES),
+            "services_count": len(SERVICES),
+            "availability_count": len(AVAILABILITY)
+        }
+    except Exception as e:
+        logger.error(f"Error initializing services: {e}")
+        raise HTTPException(status_code=500, detail=f"Erreur: {str(e)}")
