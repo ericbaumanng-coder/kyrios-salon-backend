@@ -62,6 +62,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ============== HEALTH CHECK ==============
+
+@api_router.get("/health")
+async def health_check():
+    """Health check endpoint for Railway"""
+    return {"status": "healthy", "service": "kyrios-salon-backend"}
+
 # ============== MODELS ==============
 
 class PriceBySize(BaseModel):
