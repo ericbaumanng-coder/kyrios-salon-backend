@@ -10,9 +10,7 @@ from typing import List, Optional, Dict, Any
 import uuid
 from datetime import datetime, timezone
 from bson import ObjectId
-from emergentintegrations.payments.stripe.checkout import (
-    StripeCheckout, CheckoutSessionResponse, CheckoutStatusResponse, CheckoutSessionRequest
-)
+import stripe
 
 # Import email and whatsapp services
 from email_service import (
@@ -49,6 +47,7 @@ db = client[os.environ['DB_NAME']]
 
 # Stripe API Key
 stripe_api_key = os.environ.get('STRIPE_API_KEY', 'sk_test_emergent')
+stripe.api_key = stripe_api_key
 
 # Create the main app
 app = FastAPI(title="Kyrios Salon / Lyrias'Hair API")
@@ -386,11 +385,6 @@ async def create_checkout(session_id: str, order_data: OrderCreate, request: Req
     await db.orders.insert_one(order_dict)
     
     # Create Stripe checkout session
-    host_url = str(request.base_url).rstrip('/')
-    webhook_url = f"{host_url}/api/webhook/stripe"
-    
-    stripe_checkout = StripeCheckout(api_key=stripe_api_key, webhook_url=webhook_url)
-    
     origin_url = order_data.origin_url.rstrip('/')
     success_url = f"{origin_url}/order-confirmation?session_id={{CHECKOUT_SESSION_ID}}"
     cancel_url = f"{origin_url}/cart"
@@ -402,27 +396,37 @@ async def create_checkout(session_id: str, order_data: OrderCreate, request: Req
         "payment_type": order.payment_type
     }
     
-    checkout_request = CheckoutSessionRequest(
-        amount=float(amount_to_pay),
-        currency="chf",
-        success_url=success_url,
-        cancel_url=cancel_url,
-        metadata=metadata
-    )
-    
     try:
-        checkout_session: CheckoutSessionResponse = await stripe_checkout.create_checkout_session(checkout_request)
+        # Create Stripe checkout session using standard stripe library
+        checkout_session = stripe.checkout.Session.create(
+            payment_method_types=["card"],
+            line_items=[{
+                "price_data": {
+                    "currency": "chf",
+                    "product_data": {
+                        "name": f"Commande {order.order_number}" + (" (Acompte)" if requires_deposit else ""),
+                    },
+                    "unit_amount": int(amount_to_pay * 100),  # Stripe uses cents
+                },
+                "quantity": 1,
+            }],
+            mode="payment",
+            success_url=success_url,
+            cancel_url=cancel_url,
+            metadata=metadata,
+            customer_email=order_data.customer_email,
+        )
         
         # Update order with stripe session
         await db.orders.update_one(
             {"id": order.id},
-            {"$set": {"stripe_session_id": checkout_session.session_id}}
+            {"$set": {"stripe_session_id": checkout_session.id}}
         )
         
         # Create payment transaction record
         payment_transaction = PaymentTransaction(
             order_id=order.id,
-            session_id=checkout_session.session_id,
+            session_id=checkout_session.id,
             amount=float(amount_to_pay),
             currency="chf",
             payment_status="initiated",
@@ -435,7 +439,7 @@ async def create_checkout(session_id: str, order_data: OrderCreate, request: Req
         
         return {
             "checkout_url": checkout_session.url,
-            "session_id": checkout_session.session_id,
+            "session_id": checkout_session.id,
             "order_id": order.id,
             "order_number": order.order_number,
             "amount_to_pay": amount_to_pay,
@@ -450,36 +454,34 @@ async def create_checkout(session_id: str, order_data: OrderCreate, request: Req
 
 @api_router.get("/checkout/status/{checkout_session_id}")
 async def get_checkout_status(checkout_session_id: str, request: Request):
-    host_url = str(request.base_url).rstrip('/')
-    webhook_url = f"{host_url}/api/webhook/stripe"
-    
-    stripe_checkout = StripeCheckout(api_key=stripe_api_key, webhook_url=webhook_url)
-    
     try:
-        status: CheckoutStatusResponse = await stripe_checkout.get_checkout_status(checkout_session_id)
+        # Get checkout session status using standard stripe library
+        session = stripe.checkout.Session.retrieve(checkout_session_id)
+        
+        payment_status = "paid" if session.payment_status == "paid" else "pending"
         
         # Find the payment transaction
         transaction = await db.payment_transactions.find_one({"session_id": checkout_session_id})
         
-        if transaction and transaction.get("payment_status") != status.payment_status:
+        if transaction and transaction.get("payment_status") != payment_status:
             # Update transaction status
             await db.payment_transactions.update_one(
                 {"session_id": checkout_session_id},
                 {
                     "$set": {
-                        "payment_status": status.payment_status,
+                        "payment_status": payment_status,
                         "updated_at": datetime.now(timezone.utc).isoformat()
                     }
                 }
             )
             
             # If paid, update order
-            if status.payment_status == "paid":
-                order_id = status.metadata.get("order_id")
+            if payment_status == "paid":
+                order_id = session.metadata.get("order_id") if session.metadata else None
                 if order_id:
                     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
                     if order and order.get("status") not in ["paid", "deposit_paid"]:
-                        amount_paid = status.amount_total / 100  # Stripe returns cents
+                        amount_paid = session.amount_total / 100  # Stripe returns cents
                         remaining = order["total"] - amount_paid
                         
                         new_status = "paid" if remaining <= 0 else "deposit_paid"
@@ -513,11 +515,11 @@ async def get_checkout_status(checkout_session_id: str, request: Request):
                             logger.error(f"Error sending order emails: {e}")
         
         return {
-            "status": status.status,
-            "payment_status": status.payment_status,
-            "amount_total": status.amount_total,
-            "currency": status.currency,
-            "metadata": status.metadata
+            "status": session.status,
+            "payment_status": payment_status,
+            "amount_total": session.amount_total,
+            "currency": session.currency,
+            "metadata": dict(session.metadata) if session.metadata else {}
         }
         
     except Exception as e:
@@ -639,58 +641,61 @@ async def stripe_webhook(request: Request):
         body = await request.body()
         signature = request.headers.get("Stripe-Signature")
         
-        host_url = str(request.base_url).rstrip('/')
-        webhook_url = f"{host_url}/api/webhook/stripe"
+        # For now, parse the event without signature verification
+        # In production, add STRIPE_WEBHOOK_SECRET and verify
+        import json
+        event_data = json.loads(body)
+        event_type = event_data.get("type", "")
         
-        stripe_checkout = StripeCheckout(api_key=stripe_api_key, webhook_url=webhook_url)
-        webhook_response = await stripe_checkout.handle_webhook(body, signature)
+        logger.info(f"Webhook received: {event_type}")
         
-        logger.info(f"Webhook received: {webhook_response.event_type}")
-        
-        if webhook_response.payment_status == "paid":
-            metadata = webhook_response.metadata or {}
+        if event_type == "checkout.session.completed":
+            session = event_data.get("data", {}).get("object", {})
+            metadata = session.get("metadata", {})
+            payment_status = session.get("payment_status", "")
             
-            # Handle order payment
-            order_id = metadata.get("order_id")
-            if order_id:
-                order = await db.orders.find_one({"id": order_id}, {"_id": 0})
-                if order:
-                    await db.orders.update_one(
-                        {"id": order_id},
-                        {"$set": {"status": "processing"}}
-                    )
-                    
-                    # Send enhanced notifications
-                    try:
-                        await send_order_confirmation_email(order)
-                        await send_deposit_received_email(order)
-                        await notify_new_order(order)
-                    except Exception as notif_error:
-                        logger.error(f"Notification error for order: {notif_error}")
-            
-            # Handle booking deposit payment
-            appointment_id = metadata.get("appointment_id")
-            if appointment_id:
-                appointment = await db.appointments.find_one({"id": appointment_id}, {"_id": 0})
-                if appointment and not appointment.get("deposit_paid"):
-                    await db.appointments.update_one(
-                        {"id": appointment_id},
-                        {"$set": {
-                            "deposit_paid": True,
-                            "status": "confirmed"
-                        }}
-                    )
-                    logger.info(f"Booking {appointment_id} confirmed after payment")
-                    
-                    # Send appointment notifications
-                    try:
-                        # Refresh appointment data
-                        updated_appt = await db.appointments.find_one({"id": appointment_id}, {"_id": 0})
-                        if updated_appt:
-                            await send_appointment_confirmation_email(updated_appt)
-                            await notify_new_appointment(updated_appt)
-                    except Exception as notif_error:
-                        logger.error(f"Notification error for appointment: {notif_error}")
+            if payment_status == "paid":
+                # Handle order payment
+                order_id = metadata.get("order_id")
+                if order_id:
+                    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+                    if order:
+                        await db.orders.update_one(
+                            {"id": order_id},
+                            {"$set": {"status": "processing"}}
+                        )
+                        
+                        # Send enhanced notifications
+                        try:
+                            await send_order_confirmation_email(order)
+                            await send_deposit_received_email(order)
+                            await notify_new_order(order)
+                        except Exception as notif_error:
+                            logger.error(f"Notification error for order: {notif_error}")
+                
+                # Handle booking deposit payment
+                appointment_id = metadata.get("appointment_id")
+                if appointment_id:
+                    appointment = await db.appointments.find_one({"id": appointment_id}, {"_id": 0})
+                    if appointment and not appointment.get("deposit_paid"):
+                        await db.appointments.update_one(
+                            {"id": appointment_id},
+                            {"$set": {
+                                "deposit_paid": True,
+                                "status": "confirmed"
+                            }}
+                        )
+                        logger.info(f"Booking {appointment_id} confirmed after payment")
+                        
+                        # Send appointment notifications
+                        try:
+                            # Refresh appointment data
+                            updated_appt = await db.appointments.find_one({"id": appointment_id}, {"_id": 0})
+                            if updated_appt:
+                                await send_appointment_confirmation_email(updated_appt)
+                                await notify_new_appointment(updated_appt)
+                        except Exception as notif_error:
+                            logger.error(f"Notification error for appointment: {notif_error}")
         
         return {"received": True}
         

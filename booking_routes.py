@@ -14,9 +14,7 @@ import os
 import logging
 from pathlib import Path
 from dotenv import load_dotenv
-from emergentintegrations.payments.stripe.checkout import (
-    StripeCheckout, CheckoutSessionResponse, CheckoutSessionRequest
-)
+import stripe
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +29,7 @@ db = client[os.environ['DB_NAME']]
 
 # Stripe API Key
 stripe_api_key = os.environ.get('STRIPE_API_KEY', 'sk_test_emergent')
+stripe.api_key = stripe_api_key
 
 # Constants
 DEPOSIT_AMOUNT = 20.0  # Fixed 20 CHF deposit for all appointments
@@ -425,11 +424,6 @@ async def create_appointment(appointment_data: AppointmentCreate, request: Reque
     await db.appointments.insert_one(appt_dict)
     
     # Create Stripe checkout session for deposit
-    host_url = str(request.base_url).rstrip('/')
-    webhook_url = f"{host_url}/api/webhook/stripe"
-    
-    stripe_checkout = StripeCheckout(api_key=stripe_api_key, webhook_url=webhook_url)
-    
     origin_url = appointment_data.origin_url.rstrip('/')
     success_url = f"{origin_url}/booking-confirmation?appointment_id={appointment.id}"
     cancel_url = f"{origin_url}?booking_cancelled=true"
@@ -441,26 +435,37 @@ async def create_appointment(appointment_data: AppointmentCreate, request: Reque
         "type": "booking_deposit"
     }
     
-    checkout_request = CheckoutSessionRequest(
-        amount=DEPOSIT_AMOUNT,
-        currency="chf",
-        success_url=success_url,
-        cancel_url=cancel_url,
-        metadata=metadata
-    )
-    
     try:
-        checkout_session: CheckoutSessionResponse = await stripe_checkout.create_checkout_session(checkout_request)
+        # Create Stripe checkout session using standard stripe library
+        checkout_session = stripe.checkout.Session.create(
+            payment_method_types=["card"],
+            line_items=[{
+                "price_data": {
+                    "currency": "chf",
+                    "product_data": {
+                        "name": f"Acompte RDV - {service['name']}",
+                        "description": f"Réservation {appointment.appointment_number}"
+                    },
+                    "unit_amount": int(DEPOSIT_AMOUNT * 100),  # Stripe uses cents
+                },
+                "quantity": 1,
+            }],
+            mode="payment",
+            success_url=success_url,
+            cancel_url=cancel_url,
+            metadata=metadata,
+            customer_email=appointment_data.customer_email,
+        )
         
         # Update appointment with stripe session
         await db.appointments.update_one(
             {"id": appointment.id},
-            {"$set": {"stripe_session_id": checkout_session.session_id}}
+            {"$set": {"stripe_session_id": checkout_session.id}}
         )
         
         return {
             "checkout_url": checkout_session.url,
-            "session_id": checkout_session.session_id,
+            "session_id": checkout_session.id,
             "appointment_id": appointment.id,
             "appointment_number": appointment.appointment_number,
             "deposit_amount": DEPOSIT_AMOUNT
