@@ -1,13 +1,13 @@
 """
 Booking System Routes for Kyrios Salon
-- Services management
+- Services management with size variations
 - Availability management
 - Appointments booking with 20 CHF deposit
 """
 from fastapi import APIRouter, HTTPException, Request
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict
 from datetime import datetime, timezone, timedelta
 import uuid
 import os
@@ -44,16 +44,40 @@ class ServiceCategory(BaseModel):
     name: str
     name_de: Optional[str] = None
     description: Optional[str] = None
+    icon: Optional[str] = None
+    image_url: Optional[str] = None
+    order: int = 0
+    is_active: bool = True
+
+
+class SizeVariation(BaseModel):
+    size: str  # S, M, L or custom
+    price: float
+    duration_minutes: int
+
+
+class ServiceModel(BaseModel):
+    """A service model with size variations (e.g., Box Braids with S/M/L)"""
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    category_id: str
+    name: str
+    name_de: Optional[str] = None
+    description: Optional[str] = None
+    image_url: Optional[str] = None
+    variations: List[SizeVariation] = []
+    is_active: bool = True
     order: int = 0
 
 
 class Service(BaseModel):
+    """Legacy service model for backwards compatibility"""
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     category_id: str
     name: str
     name_de: Optional[str] = None
     price: float
     duration_minutes: int
+    description: Optional[str] = None
     image_url: Optional[str] = None
     is_active: bool = True
     order: int = 0
@@ -106,7 +130,15 @@ class Appointment(BaseModel):
 
 
 class AppointmentCreate(BaseModel):
-    service_id: str
+    # New model - with service model and variation
+    service_model_id: Optional[str] = None
+    service_name: Optional[str] = None
+    variation_size: Optional[str] = None
+    price: Optional[float] = None
+    duration_minutes: Optional[int] = None
+    # Legacy field for backward compatibility
+    service_id: Optional[str] = None
+    # Customer info
     customer_name: str
     customer_email: str
     customer_phone: str
@@ -239,10 +271,11 @@ async def set_availability(availability_list: List[Availability]):
 
 
 @booking_router.get("/available-slots")
-async def get_available_slots(date: str, service_id: str):
+async def get_available_slots(date: str, duration: Optional[int] = None, service_id: Optional[str] = None):
     """
-    Get available time slots for a specific date and service.
+    Get available time slots for a specific date.
     Takes into account service duration, existing appointments, and buffer time.
+    Accepts either 'duration' (in minutes) or 'service_id' for backward compatibility.
     """
     # Parse date
     try:
@@ -271,17 +304,25 @@ async def get_available_slots(date: str, service_id: str):
     if day_of_week not in [2, 3, 4, 5]:  # Wednesday=2, Thursday=3, Friday=4, Saturday=5
         return {"slots": [], "message": "Le salon est fermé ce jour"}
     
+    # Check for blocked dates
+    blocked = await db.blocked_dates.find_one({"date": date})
+    if blocked:
+        return {"slots": [], "message": blocked.get("reason", "Date bloquée")}
+    
     # Get availability for this day
     availability = await db.availability.find_one({"day_of_week": day_of_week, "is_active": True}, {"_id": 0})
     if not availability:
         return {"slots": [], "message": "Aucune disponibilité définie pour ce jour"}
     
-    # Get service duration
-    service = await db.services.find_one({"id": service_id}, {"_id": 0})
-    if not service:
-        raise HTTPException(status_code=404, detail="Service non trouvé")
+    # Get service duration - from duration parameter or service_id for backward compatibility
+    service_duration = duration
+    if not service_duration and service_id:
+        service = await db.services.find_one({"id": service_id}, {"_id": 0})
+        if service:
+            service_duration = service["duration_minutes"]
     
-    service_duration = service["duration_minutes"]
+    if not service_duration:
+        service_duration = 60  # Default 1 hour if nothing specified
     total_slot_duration = service_duration + BUFFER_MINUTES
     
     # Get existing appointments for this date
@@ -368,10 +409,31 @@ async def get_appointment(appointment_id: str):
 async def create_appointment(appointment_data: AppointmentCreate, request: Request):
     """Create a new appointment and initiate Stripe checkout for deposit"""
     
-    # Get service
-    service = await db.services.find_one({"id": appointment_data.service_id}, {"_id": 0})
-    if not service:
-        raise HTTPException(status_code=404, detail="Service non trouvé")
+    # Determine service info - new format with service_model_id or legacy with service_id
+    service_name = None
+    service_price = None
+    service_duration = None
+    service_id = None
+    variation_size = None
+    
+    if appointment_data.service_model_id and appointment_data.price and appointment_data.duration_minutes:
+        # New format - use provided data directly from variation
+        service_name = appointment_data.service_name
+        service_price = appointment_data.price
+        service_duration = appointment_data.duration_minutes
+        service_id = appointment_data.service_model_id
+        variation_size = appointment_data.variation_size
+    elif appointment_data.service_id:
+        # Legacy format - lookup service from DB
+        service = await db.services.find_one({"id": appointment_data.service_id}, {"_id": 0})
+        if not service:
+            raise HTTPException(status_code=404, detail="Service non trouvé")
+        service_name = service["name"]
+        service_price = service["price"]
+        service_duration = service["duration_minutes"]
+        service_id = service["id"]
+    else:
+        raise HTTPException(status_code=400, detail="Service model ou service_id requis")
     
     # Validate date and time
     try:
@@ -384,9 +446,14 @@ async def create_appointment(appointment_data: AppointmentCreate, request: Reque
     if day_of_week not in [2, 3, 4, 5]:
         raise HTTPException(status_code=400, detail="Le salon est fermé ce jour")
     
+    # Check for blocked dates
+    blocked = await db.blocked_dates.find_one({"date": appointment_data.appointment_date})
+    if blocked:
+        raise HTTPException(status_code=400, detail=blocked.get("reason", "Date bloquée"))
+    
     # Calculate end time
     start_minutes = time_to_minutes(appointment_data.start_time)
-    end_time = minutes_to_time(start_minutes + service["duration_minutes"])
+    end_time = minutes_to_time(start_minutes + service_duration)
     
     # Check for conflicts
     existing = await db.appointments.find_one({
@@ -406,10 +473,10 @@ async def create_appointment(appointment_data: AppointmentCreate, request: Reque
     # Create appointment
     appointment = Appointment(
         appointment_number=generate_appointment_number(),
-        service_id=service["id"],
-        service_name=service["name"],
-        service_price=service["price"],
-        duration_minutes=service["duration_minutes"],
+        service_id=service_id,
+        service_name=service_name + (f" ({variation_size})" if variation_size and variation_size != "Unique" else ""),
+        service_price=service_price,
+        duration_minutes=service_duration,
         customer_name=appointment_data.customer_name,
         customer_email=appointment_data.customer_email,
         customer_phone=appointment_data.customer_phone,
@@ -443,7 +510,7 @@ async def create_appointment(appointment_data: AppointmentCreate, request: Reque
                 "price_data": {
                     "currency": "chf",
                     "product_data": {
-                        "name": f"Acompte RDV - {service['name']}",
+                        "name": f"Acompte RDV - {service_name}" + (f" ({variation_size})" if variation_size and variation_size != "Unique" else ""),
                         "description": f"Réservation {appointment.appointment_number}"
                     },
                     "unit_amount": int(DEPOSIT_AMOUNT * 100),  # Stripe uses cents
@@ -599,9 +666,9 @@ async def get_booking_stats():
 
 # ============== SEED/INIT SERVICES ==============
 
-@booking_router.post("/admin/init-services")
-async def init_services():
-    """Initialize the database with all services and categories"""
+@booking_router.post("/admin/init-services-v2")
+async def init_services_v2():
+    """Initialize the database with service models that have size variations"""
     
     # Service Categories
     CATEGORIES = [
@@ -612,7 +679,8 @@ async def init_services():
             "description": "Box braids, knotless, twists et plus",
             "icon": "scissors",
             "image_url": "https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?w=400",
-            "order": 1
+            "order": 1,
+            "is_active": True
         },
         {
             "id": "cat_tissage",
@@ -621,7 +689,8 @@ async def init_services():
             "description": "Tissage, closure, frontale et ponytail",
             "icon": "sparkles",
             "image_url": "https://images.unsplash.com/photo-1595499280852-21f4f3a64400?w=400",
-            "order": 2
+            "order": 2,
+            "is_active": True
         },
         {
             "id": "cat_locks",
@@ -630,7 +699,8 @@ async def init_services():
             "description": "Création et entretien de locks",
             "icon": "crown",
             "image_url": "https://images.unsplash.com/photo-1611175603085-e7ceaf1f8a9f?w=400",
-            "order": 3
+            "order": 3,
+            "is_active": True
         },
         {
             "id": "cat_soins",
@@ -639,83 +709,515 @@ async def init_services():
             "description": "Soins, brushing, lissage et coupe",
             "icon": "heart",
             "image_url": "https://images.unsplash.com/photo-1560066984-138dadb4c035?w=400",
-            "order": 4
+            "order": 4,
+            "is_active": True
         }
     ]
 
-    # All Services
-    SERVICES = [
+    # Service Models with size variations
+    SERVICE_MODELS = [
         # FAMILLE 1 — Tresses & Coiffures Naturelles
-        {"category_id": "cat_tresses", "name": "Box Braids S", "price": 80, "duration_minutes": 180, "description": "Petites tresses classiques - Taille courte", "order": 1},
-        {"category_id": "cat_tresses", "name": "Box Braids M", "price": 120, "duration_minutes": 240, "description": "Petites tresses classiques - Taille moyenne", "order": 2},
-        {"category_id": "cat_tresses", "name": "Box Braids L", "price": 160, "duration_minutes": 300, "description": "Petites tresses classiques - Taille longue", "order": 3},
-        {"category_id": "cat_tresses", "name": "Knotless Braids S", "price": 100, "duration_minutes": 210, "description": "Tresses sans nœud, plus légères - Courtes", "order": 4},
-        {"category_id": "cat_tresses", "name": "Knotless Braids M", "price": 140, "duration_minutes": 270, "description": "Tresses sans nœud, plus légères - Moyennes", "order": 5},
-        {"category_id": "cat_tresses", "name": "Knotless Braids L", "price": 180, "duration_minutes": 330, "description": "Tresses sans nœud, plus légères - Longues", "order": 6},
-        {"category_id": "cat_tresses", "name": "Senegalese Twists S", "price": 80, "duration_minutes": 180, "description": "Vanilles sénégalaises - Courtes", "order": 7},
-        {"category_id": "cat_tresses", "name": "Senegalese Twists M", "price": 120, "duration_minutes": 240, "description": "Vanilles sénégalaises - Moyennes", "order": 8},
-        {"category_id": "cat_tresses", "name": "Senegalese Twists L", "price": 160, "duration_minutes": 300, "description": "Vanilles sénégalaises - Longues", "order": 9},
-        {"category_id": "cat_tresses", "name": "Goddess Braids S", "price": 90, "duration_minutes": 180, "description": "Tresses déesse bohème - Courtes", "order": 10},
-        {"category_id": "cat_tresses", "name": "Goddess Braids M", "price": 130, "duration_minutes": 240, "description": "Tresses déesse bohème - Moyennes", "order": 11},
-        {"category_id": "cat_tresses", "name": "Goddess Braids L", "price": 170, "duration_minutes": 300, "description": "Tresses déesse bohème - Longues", "order": 12},
-        {"category_id": "cat_tresses", "name": "Ghana Braids S", "price": 70, "duration_minutes": 150, "description": "Tresses collées Ghana - Courtes", "order": 13},
-        {"category_id": "cat_tresses", "name": "Ghana Braids L", "price": 130, "duration_minutes": 240, "description": "Tresses collées Ghana - Longues", "order": 14},
-        {"category_id": "cat_tresses", "name": "Cornrows Simple", "price": 40, "duration_minutes": 60, "description": "Nattes collées simples", "order": 15},
-        {"category_id": "cat_tresses", "name": "Cornrows Complexes", "price": 90, "duration_minutes": 150, "description": "Nattes collées avec motifs élaborés", "order": 16},
+        {
+            "id": str(uuid.uuid4()),
+            "category_id": "cat_tresses",
+            "name": "Box Braids",
+            "description": "Petites tresses classiques",
+            "image_url": "https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?w=400",
+            "variations": [
+                {"size": "S", "price": 80, "duration_minutes": 180},
+                {"size": "M", "price": 120, "duration_minutes": 240},
+                {"size": "L", "price": 160, "duration_minutes": 300}
+            ],
+            "is_active": True,
+            "order": 1
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "category_id": "cat_tresses",
+            "name": "Knotless Braids",
+            "description": "Tresses sans nœud, plus légères et naturelles",
+            "image_url": "https://images.unsplash.com/photo-1595499280852-21f4f3a64400?w=400",
+            "variations": [
+                {"size": "S", "price": 100, "duration_minutes": 210},
+                {"size": "M", "price": 140, "duration_minutes": 270},
+                {"size": "L", "price": 180, "duration_minutes": 330}
+            ],
+            "is_active": True,
+            "order": 2
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "category_id": "cat_tresses",
+            "name": "Senegalese Twists",
+            "description": "Vanilles sénégalaises élégantes",
+            "image_url": "https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?w=400",
+            "variations": [
+                {"size": "S", "price": 80, "duration_minutes": 180},
+                {"size": "M", "price": 120, "duration_minutes": 240},
+                {"size": "L", "price": 160, "duration_minutes": 300}
+            ],
+            "is_active": True,
+            "order": 3
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "category_id": "cat_tresses",
+            "name": "Goddess Braids",
+            "description": "Tresses déesse bohème avec mèches ondulées",
+            "image_url": "https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?w=400",
+            "variations": [
+                {"size": "S", "price": 90, "duration_minutes": 180},
+                {"size": "M", "price": 130, "duration_minutes": 240},
+                {"size": "L", "price": 170, "duration_minutes": 300}
+            ],
+            "is_active": True,
+            "order": 4
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "category_id": "cat_tresses",
+            "name": "Ghana Braids",
+            "description": "Tresses collées Ghana traditionnelles",
+            "image_url": "https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?w=400",
+            "variations": [
+                {"size": "S", "price": 70, "duration_minutes": 150},
+                {"size": "L", "price": 130, "duration_minutes": 240}
+            ],
+            "is_active": True,
+            "order": 5
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "category_id": "cat_tresses",
+            "name": "Cornrows Simple",
+            "description": "Nattes collées simples et épurées",
+            "image_url": "https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?w=400",
+            "variations": [
+                {"size": "Unique", "price": 40, "duration_minutes": 60}
+            ],
+            "is_active": True,
+            "order": 6
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "category_id": "cat_tresses",
+            "name": "Cornrows Complexes",
+            "description": "Nattes collées avec motifs élaborés",
+            "image_url": "https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?w=400",
+            "variations": [
+                {"size": "Unique", "price": 90, "duration_minutes": 150}
+            ],
+            "is_active": True,
+            "order": 7
+        },
         
         # FAMILLE 2 — Tissage & Pose
-        {"category_id": "cat_tissage", "name": "Tissage", "price": 80, "duration_minutes": 90, "description": "Tissage classique cousu", "order": 1},
-        {"category_id": "cat_tissage", "name": "Pose Closure", "price": 60, "duration_minutes": 90, "description": "Pose de closure", "order": 2},
-        {"category_id": "cat_tissage", "name": "Pose Frontale", "price": 80, "duration_minutes": 120, "description": "Pose de frontale lace", "order": 3},
-        {"category_id": "cat_tissage", "name": "Pose Ponytail", "price": 50, "duration_minutes": 60, "description": "Pose de queue de cheval", "order": 4},
-        {"category_id": "cat_tissage", "name": "360 Frontale / Full Lace", "price": 120, "duration_minutes": 150, "description": "Pose complète 360 ou full lace", "order": 5},
+        {
+            "id": str(uuid.uuid4()),
+            "category_id": "cat_tissage",
+            "name": "Tissage",
+            "description": "Tissage classique cousu",
+            "image_url": "https://images.unsplash.com/photo-1595499280852-21f4f3a64400?w=400",
+            "variations": [
+                {"size": "Unique", "price": 80, "duration_minutes": 90}
+            ],
+            "is_active": True,
+            "order": 1
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "category_id": "cat_tissage",
+            "name": "Pose Closure",
+            "description": "Pose de closure pour un look naturel",
+            "image_url": "https://images.unsplash.com/photo-1595499280852-21f4f3a64400?w=400",
+            "variations": [
+                {"size": "Unique", "price": 60, "duration_minutes": 90}
+            ],
+            "is_active": True,
+            "order": 2
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "category_id": "cat_tissage",
+            "name": "Pose Frontale",
+            "description": "Pose de frontale lace pour effet baby hair",
+            "image_url": "https://images.unsplash.com/photo-1595499280852-21f4f3a64400?w=400",
+            "variations": [
+                {"size": "Unique", "price": 80, "duration_minutes": 120}
+            ],
+            "is_active": True,
+            "order": 3
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "category_id": "cat_tissage",
+            "name": "Pose Ponytail",
+            "description": "Pose de queue de cheval élégante",
+            "image_url": "https://images.unsplash.com/photo-1595499280852-21f4f3a64400?w=400",
+            "variations": [
+                {"size": "Unique", "price": 50, "duration_minutes": 60}
+            ],
+            "is_active": True,
+            "order": 4
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "category_id": "cat_tissage",
+            "name": "360 Frontale / Full Lace",
+            "description": "Pose complète 360 ou full lace premium",
+            "image_url": "https://images.unsplash.com/photo-1595499280852-21f4f3a64400?w=400",
+            "variations": [
+                {"size": "Unique", "price": 120, "duration_minutes": 150}
+            ],
+            "is_active": True,
+            "order": 5
+        },
         
         # FAMILLE 3 — Locks
-        {"category_id": "cat_locks", "name": "Locks Start", "price": 150, "duration_minutes": 180, "description": "Création de locks - Démarrage", "order": 1},
-        {"category_id": "cat_locks", "name": "Locks Maintenance", "price": 60, "duration_minutes": 90, "description": "Entretien régulier des locks", "order": 2},
-        {"category_id": "cat_locks", "name": "Locks Retouch", "price": 40, "duration_minutes": 60, "description": "Retouche racines des locks", "order": 3},
+        {
+            "id": str(uuid.uuid4()),
+            "category_id": "cat_locks",
+            "name": "Locks Start",
+            "description": "Création de locks - Démarrage de votre voyage",
+            "image_url": "https://images.unsplash.com/photo-1611175603085-e7ceaf1f8a9f?w=400",
+            "variations": [
+                {"size": "Unique", "price": 150, "duration_minutes": 180}
+            ],
+            "is_active": True,
+            "order": 1
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "category_id": "cat_locks",
+            "name": "Locks Maintenance",
+            "description": "Entretien régulier de vos locks",
+            "image_url": "https://images.unsplash.com/photo-1611175603085-e7ceaf1f8a9f?w=400",
+            "variations": [
+                {"size": "Unique", "price": 60, "duration_minutes": 90}
+            ],
+            "is_active": True,
+            "order": 2
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "category_id": "cat_locks",
+            "name": "Locks Retouch",
+            "description": "Retouche racines des locks",
+            "image_url": "https://images.unsplash.com/photo-1611175603085-e7ceaf1f8a9f?w=400",
+            "variations": [
+                {"size": "Unique", "price": 40, "duration_minutes": 60}
+            ],
+            "is_active": True,
+            "order": 3
+        },
         
         # FAMILLE 4 — Soins & Styling
-        {"category_id": "cat_soins", "name": "Soin Deep Treatment", "price": 50, "duration_minutes": 60, "description": "Soin profond hydratant", "order": 1},
-        {"category_id": "cat_soins", "name": "Brushing", "price": 30, "duration_minutes": 45, "description": "Brushing lisse ou wavy", "order": 2},
-        {"category_id": "cat_soins", "name": "Dégradé", "price": 35, "duration_minutes": 45, "description": "Coupe dégradée", "order": 3},
-        {"category_id": "cat_soins", "name": "Lissage Kératine", "price": 120, "duration_minutes": 120, "description": "Lissage brésilien à la kératine", "order": 4},
-        {"category_id": "cat_soins", "name": "Coupe + Soin", "price": 45, "duration_minutes": 60, "description": "Coupe avec soin inclus", "order": 5},
+        {
+            "id": str(uuid.uuid4()),
+            "category_id": "cat_soins",
+            "name": "Soin Deep Treatment",
+            "description": "Soin profond hydratant et réparateur",
+            "image_url": "https://images.unsplash.com/photo-1560066984-138dadb4c035?w=400",
+            "variations": [
+                {"size": "Unique", "price": 50, "duration_minutes": 60}
+            ],
+            "is_active": True,
+            "order": 1
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "category_id": "cat_soins",
+            "name": "Brushing",
+            "description": "Brushing lisse ou wavy professionnel",
+            "image_url": "https://images.unsplash.com/photo-1560066984-138dadb4c035?w=400",
+            "variations": [
+                {"size": "Unique", "price": 30, "duration_minutes": 45}
+            ],
+            "is_active": True,
+            "order": 2
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "category_id": "cat_soins",
+            "name": "Dégradé",
+            "description": "Coupe dégradée tendance",
+            "image_url": "https://images.unsplash.com/photo-1560066984-138dadb4c035?w=400",
+            "variations": [
+                {"size": "Unique", "price": 35, "duration_minutes": 45}
+            ],
+            "is_active": True,
+            "order": 3
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "category_id": "cat_soins",
+            "name": "Lissage Kératine",
+            "description": "Lissage brésilien à la kératine longue durée",
+            "image_url": "https://images.unsplash.com/photo-1560066984-138dadb4c035?w=400",
+            "variations": [
+                {"size": "Unique", "price": 120, "duration_minutes": 120}
+            ],
+            "is_active": True,
+            "order": 4
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "category_id": "cat_soins",
+            "name": "Coupe + Soin",
+            "description": "Coupe personnalisée avec soin inclus",
+            "image_url": "https://images.unsplash.com/photo-1560066984-138dadb4c035?w=400",
+            "variations": [
+                {"size": "Unique", "price": 45, "duration_minutes": 60}
+            ],
+            "is_active": True,
+            "order": 5
+        }
     ]
 
     # Default availability (Wednesday to Saturday, 7:30 - 18:30)
     AVAILABILITY = [
-        {"id": str(uuid.uuid4()), "day_of_week": 2, "start_time": "07:30", "end_time": "18:30", "is_active": True},  # Wednesday
-        {"id": str(uuid.uuid4()), "day_of_week": 3, "start_time": "07:30", "end_time": "18:30", "is_active": True},  # Thursday
-        {"id": str(uuid.uuid4()), "day_of_week": 4, "start_time": "07:30", "end_time": "18:30", "is_active": True},  # Friday
-        {"id": str(uuid.uuid4()), "day_of_week": 5, "start_time": "07:30", "end_time": "18:30", "is_active": True},  # Saturday
+        {"id": str(uuid.uuid4()), "day_of_week": 2, "day_name": "Mercredi", "start_time": "07:30", "end_time": "18:30", "is_active": True},
+        {"id": str(uuid.uuid4()), "day_of_week": 3, "day_name": "Jeudi", "start_time": "07:30", "end_time": "18:30", "is_active": True},
+        {"id": str(uuid.uuid4()), "day_of_week": 4, "day_name": "Vendredi", "start_time": "07:30", "end_time": "18:30", "is_active": True},
+        {"id": str(uuid.uuid4()), "day_of_week": 5, "day_name": "Samedi", "start_time": "07:30", "end_time": "18:30", "is_active": True},
     ]
     
     try:
         # Clear existing data
         await db.service_categories.delete_many({})
-        await db.services.delete_many({})
+        await db.service_models.delete_many({})
         await db.availability.delete_many({})
+        await db.blocked_dates.delete_many({})
         
         # Insert categories
         await db.service_categories.insert_many(CATEGORIES)
         
-        # Insert services with generated IDs
-        for service in SERVICES:
-            service["id"] = str(uuid.uuid4())
-            service["is_active"] = True
-        await db.services.insert_many(SERVICES)
+        # Insert service models
+        await db.service_models.insert_many(SERVICE_MODELS)
         
         # Insert availability
         await db.availability.insert_many(AVAILABILITY)
         
         return {
             "success": True,
-            "message": "Services initialisés avec succès",
+            "message": "Services V2 initialisés avec succès",
             "categories_count": len(CATEGORIES),
-            "services_count": len(SERVICES),
+            "service_models_count": len(SERVICE_MODELS),
             "availability_count": len(AVAILABILITY)
         }
     except Exception as e:
-        logger.error(f"Error initializing services: {e}")
+        logger.error(f"Error initializing services V2: {e}")
         raise HTTPException(status_code=500, detail=f"Erreur: {str(e)}")
+
+
+# Keep the old init for backwards compatibility
+@booking_router.post("/admin/init-services")
+async def init_services():
+    return await init_services_v2()
+
+
+# ============== SERVICE MODELS MANAGEMENT ==============
+
+@booking_router.get("/service-models")
+async def get_service_models():
+    """Get all service models with variations"""
+    models = await db.service_models.find({"is_active": True}, {"_id": 0}).to_list(100)
+    return models
+
+
+@booking_router.get("/service-models/by-category/{category_id}")
+async def get_service_models_by_category(category_id: str):
+    """Get service models for a specific category"""
+    models = await db.service_models.find(
+        {"category_id": category_id, "is_active": True}, 
+        {"_id": 0}
+    ).sort("order", 1).to_list(100)
+    return models
+
+
+@booking_router.get("/admin/service-models")
+async def get_all_service_models_admin():
+    """Admin: Get all service models including inactive"""
+    models = await db.service_models.find({}, {"_id": 0}).to_list(100)
+    return models
+
+
+@booking_router.post("/admin/service-models")
+async def create_service_model(model: ServiceModel):
+    """Admin: Create a new service model"""
+    model_dict = model.model_dump()
+    await db.service_models.insert_one(model_dict)
+    return {"message": "Modèle de service créé", "id": model.id}
+
+
+@booking_router.put("/admin/service-models/{model_id}")
+async def update_service_model(model_id: str, model: ServiceModel):
+    """Admin: Update a service model"""
+    model_dict = model.model_dump()
+    model_dict["id"] = model_id
+    
+    result = await db.service_models.update_one(
+        {"id": model_id},
+        {"$set": model_dict}
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Modèle non trouvé")
+    
+    return {"message": "Modèle mis à jour"}
+
+
+@booking_router.delete("/admin/service-models/{model_id}")
+async def delete_service_model(model_id: str):
+    """Admin: Delete a service model"""
+    result = await db.service_models.delete_one({"id": model_id})
+    
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Modèle non trouvé")
+    
+    return {"message": "Modèle supprimé"}
+
+
+# ============== CATEGORY MANAGEMENT ==============
+
+@booking_router.post("/admin/service-categories")
+async def create_category(category: ServiceCategory):
+    """Admin: Create a new category"""
+    cat_dict = category.model_dump()
+    await db.service_categories.insert_one(cat_dict)
+    return {"message": "Catégorie créée", "id": category.id}
+
+
+@booking_router.put("/admin/service-categories/{category_id}")
+async def update_category(category_id: str, category: ServiceCategory):
+    """Admin: Update a category"""
+    cat_dict = category.model_dump()
+    cat_dict["id"] = category_id
+    
+    result = await db.service_categories.update_one(
+        {"id": category_id},
+        {"$set": cat_dict}
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Catégorie non trouvée")
+    
+    return {"message": "Catégorie mise à jour"}
+
+
+@booking_router.delete("/admin/service-categories/{category_id}")
+async def delete_category(category_id: str):
+    """Admin: Delete a category"""
+    # Check if any services use this category
+    services_count = await db.service_models.count_documents({"category_id": category_id})
+    if services_count > 0:
+        raise HTTPException(status_code=400, detail=f"Impossible de supprimer: {services_count} services utilisent cette catégorie")
+    
+    result = await db.service_categories.delete_one({"id": category_id})
+    
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Catégorie non trouvée")
+    
+    return {"message": "Catégorie supprimée"}
+
+
+# ============== AVAILABILITY MANAGEMENT ==============
+
+class AvailabilityUpdate(BaseModel):
+    day_of_week: int  # 0=Monday, 6=Sunday
+    day_name: str
+    start_time: str  # HH:MM format
+    end_time: str    # HH:MM format
+    is_active: bool
+
+
+class BlockedDate(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    date: str  # YYYY-MM-DD format
+    reason: Optional[str] = None
+    all_day: bool = True
+    start_time: Optional[str] = None  # If not all_day
+    end_time: Optional[str] = None    # If not all_day
+
+
+@booking_router.get("/admin/availability")
+async def get_availability():
+    """Get all availability settings"""
+    availability = await db.availability.find({}, {"_id": 0}).sort("day_of_week", 1).to_list(10)
+    return availability
+
+
+@booking_router.put("/admin/availability/{day_of_week}")
+async def update_availability(day_of_week: int, update: AvailabilityUpdate):
+    """Update availability for a specific day"""
+    result = await db.availability.update_one(
+        {"day_of_week": day_of_week},
+        {"$set": update.model_dump()},
+        upsert=True
+    )
+    return {"message": "Disponibilité mise à jour"}
+
+
+@booking_router.post("/admin/availability/bulk")
+async def update_availability_bulk(updates: List[AvailabilityUpdate]):
+    """Update multiple availability settings at once"""
+    for update in updates:
+        await db.availability.update_one(
+            {"day_of_week": update.day_of_week},
+            {"$set": update.model_dump()},
+            upsert=True
+        )
+    return {"message": f"{len(updates)} disponibilités mises à jour"}
+
+
+@booking_router.get("/admin/blocked-dates")
+async def get_blocked_dates():
+    """Get all blocked dates"""
+    blocked = await db.blocked_dates.find({}, {"_id": 0}).to_list(100)
+    return blocked
+
+
+@booking_router.post("/admin/blocked-dates")
+async def add_blocked_date(blocked: BlockedDate):
+    """Block a specific date"""
+    blocked_dict = blocked.model_dump()
+    await db.blocked_dates.insert_one(blocked_dict)
+    return {"message": "Date bloquée", "id": blocked.id}
+
+
+@booking_router.delete("/admin/blocked-dates/{blocked_id}")
+async def remove_blocked_date(blocked_id: str):
+    """Remove a blocked date"""
+    result = await db.blocked_dates.delete_one({"id": blocked_id})
+    
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Date bloquée non trouvée")
+    
+    return {"message": "Date débloquée"}
+
+
+@booking_router.get("/availability/check/{date}")
+async def check_date_availability(date: str):
+    """Check if a specific date is available for booking"""
+    try:
+        check_date = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Format de date invalide (YYYY-MM-DD)")
+    
+    day_of_week = check_date.weekday()
+    
+    # Check if day is blocked
+    blocked = await db.blocked_dates.find_one({"date": date})
+    if blocked:
+        return {"available": False, "reason": blocked.get("reason", "Date bloquée")}
+    
+    # Check day availability
+    day_availability = await db.availability.find_one({"day_of_week": day_of_week})
+    if not day_availability or not day_availability.get("is_active", False):
+        return {"available": False, "reason": "Jour non disponible"}
+    
+    return {
+        "available": True,
+        "start_time": day_availability["start_time"],
+        "end_time": day_availability["end_time"]
+    }
