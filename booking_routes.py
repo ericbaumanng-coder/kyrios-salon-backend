@@ -51,9 +51,16 @@ class ServiceCategory(BaseModel):
 
 
 class SizeVariation(BaseModel):
-    size: str  # S, M, L or custom
+    size: str  # XS, S, M, L, XL or custom
     price: float
     duration_minutes: int
+
+
+class ThicknessVariation(BaseModel):
+    """Thickness/width variation for braids (Tresses category only)"""
+    thickness: str  # Très Fin, Fin, Moyen, Large, Très Large
+    price_modifier: float  # Additional price to add
+    duration_modifier: int  # Additional minutes to add
 
 
 class ServiceModel(BaseModel):
@@ -65,6 +72,8 @@ class ServiceModel(BaseModel):
     description: Optional[str] = None
     image_url: Optional[str] = None
     variations: List[SizeVariation] = []
+    thickness_variations: Optional[List[ThicknessVariation]] = None  # Only for Tresses category
+    has_thickness: bool = False  # Flag to indicate if this service uses thickness pricing
     is_active: bool = True
     order: int = 0
 
@@ -274,8 +283,10 @@ async def set_availability(availability_list: List[Availability]):
 async def get_available_slots(date: str, duration: Optional[int] = None, service_id: Optional[str] = None):
     """
     Get available time slots for a specific date.
-    Takes into account service duration, existing appointments, and buffer time.
-    Accepts either 'duration' (in minutes) or 'service_id' for backward compatibility.
+    SMART BOOKING LOGIC:
+    1. First booking of the day MUST start at opening time
+    2. Subsequent bookings start immediately after the previous one ends
+    3. Slots that would extend past closing time are not offered
     """
     # Parse date
     try:
@@ -300,10 +311,6 @@ async def get_available_slots(date: str, duration: Optional[int] = None, service
     # Get day of week (Python: Monday=0, Sunday=6)
     day_of_week = target_date.weekday()
     
-    # Check if salon is open on this day (only Wed-Sat: 2,3,4,5)
-    if day_of_week not in [2, 3, 4, 5]:  # Wednesday=2, Thursday=3, Friday=4, Saturday=5
-        return {"slots": [], "message": "Le salon est fermé ce jour"}
-    
     # Check for blocked dates
     blocked = await db.blocked_dates.find_one({"date": date})
     if blocked:
@@ -312,7 +319,7 @@ async def get_available_slots(date: str, duration: Optional[int] = None, service
     # Get availability for this day
     availability = await db.availability.find_one({"day_of_week": day_of_week, "is_active": True}, {"_id": 0})
     if not availability:
-        return {"slots": [], "message": "Aucune disponibilité définie pour ce jour"}
+        return {"slots": [], "message": "Le salon est fermé ce jour"}
     
     # Get service duration - from duration parameter or service_id for backward compatibility
     service_duration = duration
@@ -323,54 +330,126 @@ async def get_available_slots(date: str, duration: Optional[int] = None, service
     
     if not service_duration:
         service_duration = 60  # Default 1 hour if nothing specified
-    total_slot_duration = service_duration + BUFFER_MINUTES
     
-    # Get existing appointments for this date
+    # Get salon opening and closing times
+    opening_minutes = time_to_minutes(availability["start_time"])
+    closing_minutes = time_to_minutes(availability["end_time"])
+    
+    # Check if service can fit within the day at all
+    if service_duration > (closing_minutes - opening_minutes):
+        return {"slots": [], "message": f"Cette prestation ({service_duration} min) est trop longue pour ce jour"}
+    
+    # Get existing appointments for this date, sorted by start time
     existing_appointments = await db.appointments.find({
         "appointment_date": date,
         "status": {"$nin": ["cancelled"]}
-    }, {"_id": 0}).to_list(100)
+    }, {"_id": 0}).sort("start_time", 1).to_list(100)
     
-    # Generate time slots
+    # SMART SLOT LOGIC
     slots = []
-    start_minutes = time_to_minutes(availability["start_time"])
-    end_minutes = time_to_minutes(availability["end_time"])
     
-    current_minutes = start_minutes
-    
-    while current_minutes + service_duration <= end_minutes:
-        slot_start = minutes_to_time(current_minutes)
-        slot_end = minutes_to_time(current_minutes + service_duration)
+    if len(existing_appointments) == 0:
+        # NO APPOINTMENTS YET: First booking MUST be at opening time
+        slot_start = minutes_to_time(opening_minutes)
+        slot_end = minutes_to_time(opening_minutes + service_duration)
         
-        # Check if slot conflicts with existing appointments
+        # For today, check if opening time is still in the future
         is_available = True
-        for appt in existing_appointments:
-            appt_start = time_to_minutes(appt["start_time"])
-            appt_end = time_to_minutes(appt["end_time"]) + BUFFER_MINUTES
-            
-            # Check for overlap
-            if not (current_minutes + service_duration <= appt_start or current_minutes >= appt_end):
-                is_available = False
-                break
-        
-        # For today, check if slot is still in the future
         if target_date.date() == now.date():
-            current_hour = now.hour
-            current_min = now.minute
-            if current_minutes < (current_hour * 60 + current_min + 60):  # At least 1h from now
+            current_total_min = now.hour * 60 + now.minute + 60  # At least 1h from now
+            if opening_minutes < current_total_min:
                 is_available = False
         
         if is_available:
             slots.append({
                 "start_time": slot_start,
                 "end_time": slot_end,
-                "is_available": True
+                "is_available": True,
+                "slot_info": "Premier créneau de la journée"
             })
+    else:
+        # APPOINTMENTS EXIST: Find slots that start immediately after existing appointments
         
-        # Move to next slot (30 min intervals)
-        current_minutes += 30
+        # First, check if there's a slot at opening (before first appointment)
+        first_appt_start = time_to_minutes(existing_appointments[0]["start_time"])
+        if first_appt_start > opening_minutes:
+            # There's a gap at the beginning - offer opening slot if duration fits
+            if (first_appt_start - opening_minutes) >= service_duration:
+                slot_start = minutes_to_time(opening_minutes)
+                slot_end = minutes_to_time(opening_minutes + service_duration)
+                
+                is_available = True
+                if target_date.date() == now.date():
+                    current_total_min = now.hour * 60 + now.minute + 60
+                    if opening_minutes < current_total_min:
+                        is_available = False
+                
+                if is_available:
+                    slots.append({
+                        "start_time": slot_start,
+                        "end_time": slot_end,
+                        "is_available": True,
+                        "slot_info": "Créneau d'ouverture"
+                    })
+        
+        # Then, check slots after each existing appointment
+        for i, appt in enumerate(existing_appointments):
+            appt_end_minutes = time_to_minutes(appt["end_time"])
+            
+            # Determine the next constraint (next appointment start or closing time)
+            if i + 1 < len(existing_appointments):
+                next_constraint = time_to_minutes(existing_appointments[i + 1]["start_time"])
+            else:
+                next_constraint = closing_minutes
+            
+            # Calculate available gap
+            available_gap = next_constraint - appt_end_minutes
+            
+            # If service fits in the gap, offer the slot
+            if available_gap >= service_duration:
+                slot_start_minutes = appt_end_minutes
+                slot_start = minutes_to_time(slot_start_minutes)
+                slot_end = minutes_to_time(slot_start_minutes + service_duration)
+                
+                # For today, check if slot is still in the future
+                is_available = True
+                if target_date.date() == now.date():
+                    current_total_min = now.hour * 60 + now.minute + 60
+                    if slot_start_minutes < current_total_min:
+                        is_available = False
+                
+                if is_available:
+                    slots.append({
+                        "start_time": slot_start,
+                        "end_time": slot_end,
+                        "is_available": True,
+                        "slot_info": f"Suite au RDV de {appt.get('customer_name', 'client').split()[0]}"
+                    })
     
-    return {"slots": slots, "date": date, "service_duration": service_duration}
+    # If no slots are available
+    if len(slots) == 0:
+        # Check if there's time remaining after all appointments
+        if existing_appointments:
+            last_appt = existing_appointments[-1]
+            last_end = time_to_minutes(last_appt["end_time"])
+            remaining_time = closing_minutes - last_end
+            
+            if remaining_time > 0 and remaining_time < service_duration:
+                return {
+                    "slots": [], 
+                    "message": f"Il reste {remaining_time} min après le dernier RDV, insuffisant pour cette prestation ({service_duration} min)",
+                    "suggestion": "Essayez un autre jour ou une prestation plus courte"
+                }
+        
+        return {"slots": [], "message": "Aucun créneau disponible pour cette date"}
+    
+    return {
+        "slots": slots, 
+        "date": date, 
+        "service_duration": service_duration,
+        "salon_hours": f"{availability['start_time']} - {availability['end_time']}",
+        "smart_booking": True
+    }
 
 
 # ============== APPOINTMENTS ROUTES ==============
@@ -1119,6 +1198,84 @@ async def delete_category(category_id: str):
         raise HTTPException(status_code=404, detail="Catégorie non trouvée")
     
     return {"message": "Catégorie supprimée"}
+
+
+# ============== THICKNESS PRICING FOR TRESSES ==============
+
+# Default thickness variations for braids (now using size codes)
+DEFAULT_THICKNESS_VARIATIONS = [
+    {"thickness": "XS", "price_modifier": 0, "duration_modifier": 0},
+    {"thickness": "S", "price_modifier": 15, "duration_modifier": 15},
+    {"thickness": "M", "price_modifier": 30, "duration_modifier": 30},
+    {"thickness": "L", "price_modifier": 45, "duration_modifier": 45},
+    {"thickness": "XL", "price_modifier": 60, "duration_modifier": 60},
+]
+
+# Extended size variations (now using descriptive length names)
+EXTENDED_SIZE_VARIATIONS = [
+    {"size": "Court", "price": 60, "duration_minutes": 120},
+    {"size": "Moyen", "price": 80, "duration_minutes": 180},
+    {"size": "Long", "price": 120, "duration_minutes": 240},
+    {"size": "Très Long", "price": 160, "duration_minutes": 300},
+    {"size": "Super Long", "price": 200, "duration_minutes": 360},
+]
+
+
+@booking_router.post("/admin/enable-thickness/{category_id}")
+async def enable_thickness_for_category(category_id: str):
+    """Enable thickness variations for all services in a category (like Tresses)"""
+    # Get all services in this category
+    services = await db.service_models.find({"category_id": category_id}).to_list(100)
+    
+    if not services:
+        raise HTTPException(status_code=404, detail="Aucun service trouvé dans cette catégorie")
+    
+    updated_count = 0
+    for service in services:
+        # Update with thickness variations and extended sizes
+        update_data = {
+            "has_thickness": True,
+            "thickness_variations": DEFAULT_THICKNESS_VARIATIONS,
+        }
+        
+        # If service has old variations (S, M, L), convert to new extended format
+        if service.get("variations"):
+            old_variations = service["variations"]
+            # Map old sizes to new extended format while keeping original prices
+            new_variations = []
+            for ext_var in EXTENDED_SIZE_VARIATIONS:
+                # Try to find matching old variation
+                matching = next((v for v in old_variations if v.get("size") == ext_var["size"]), None)
+                if matching:
+                    new_variations.append(matching)
+                else:
+                    # Use default extended variation
+                    new_variations.append(ext_var)
+            update_data["variations"] = new_variations
+        else:
+            update_data["variations"] = EXTENDED_SIZE_VARIATIONS
+        
+        await db.service_models.update_one(
+            {"id": service["id"]},
+            {"$set": update_data}
+        )
+        updated_count += 1
+    
+    return {
+        "message": f"{updated_count} services mis à jour avec les variations d'épaisseur",
+        "default_thickness_variations": DEFAULT_THICKNESS_VARIATIONS,
+        "default_size_variations": EXTENDED_SIZE_VARIATIONS
+    }
+
+
+@booking_router.post("/admin/disable-thickness/{category_id}")
+async def disable_thickness_for_category(category_id: str):
+    """Disable thickness variations for all services in a category"""
+    result = await db.service_models.update_many(
+        {"category_id": category_id},
+        {"$set": {"has_thickness": False, "thickness_variations": None}}
+    )
+    return {"message": f"{result.modified_count} services mis à jour"}
 
 
 # ============== AVAILABILITY MANAGEMENT ==============
