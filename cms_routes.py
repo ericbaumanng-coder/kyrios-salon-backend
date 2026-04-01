@@ -1,20 +1,14 @@
 """
-CMS Routes for Kyrios Salon Admin Dashboard
-- Advanced Product Management
-- Site Content Management
-- Announcements/Promos/Events
-- Media Library
-- Notification Logs
+Enhanced Email Service for Kyrios Salon
+- Luxurious HTML email templates
+- SendGrid/SMTP integration (with demo mode)
+- All 5 email types + notification logging
 """
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
-from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel, Field
-from typing import List, Optional, Dict
-from datetime import datetime, timezone
-import uuid
 import os
 import logging
-import base64
+import asyncio
+from typing import Optional, Dict, List
+from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -24,591 +18,683 @@ logger = logging.getLogger(__name__)
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+# Email Configuration
+SENDGRID_API_KEY = os.environ.get('SENDGRID_API_KEY', '')
+SMTP_HOST = os.environ.get('SMTP_HOST', '')
+SMTP_PORT = int(os.environ.get('SMTP_PORT', 465))
+SMTP_USER = os.environ.get('SMTP_USER', 'info@kyrios-salon.ch')
+SMTP_PASS = os.environ.get('SMTP_PASS', '')
 
-# Create router
-cms_router = APIRouter(prefix="/api")
+# Salon Information
+SALON_NAME = "Kyrios Salon"
+SALON_ADDRESS = "Rue du Pont-de-Perrette 8, 1700 Fribourg"
+SALON_PHONE = "+41 78 848 08 67"
+SALON_EMAIL = "clients@kyrios-salon.ch"
+SALON_HOURS = "Mer-Sam 7h30-18h30"
+WHATSAPP_LINK = "https://wa.me/41788480867"
 
+# Check if in demo mode
+DEMO_MODE = not SENDGRID_API_KEY and not SMTP_PASS
 
-# ============== PRODUCT MODELS ==============
-
-class PriceVariation(BaseModel):
-    size: str  # S, M, L, XL
-    price: float
-    available: bool = True
-
-
-class ProductAdvanced(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    name: str
-    category: str  # Lisse, Ondulé, Bouclé, Afro, Bulk for Braids, Raw Hair
-    short_description: str
-    long_description: Optional[str] = None
-    care_instructions: Optional[str] = None
-    images: List[str] = []  # URLs of product images (1-5)
-    prices_by_size: List[PriceVariation] = []
-    has_color_supplement: bool = False
-    color_supplement_amount: float = 20.0
-    product_type: str = "extension"  # "extension" or "perruque"
-    status: str = "active"  # "active" or "inactive"
-    badge: Optional[str] = None  # "nouveau", "bestseller", "promo", None
-    lace_types: List[str] = []
-    is_raw_hair: bool = False
-    is_bulk: bool = False
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+if DEMO_MODE:
+    logger.warning("Email service running in DEMO MODE - no emails will be sent")
 
 
-class ProductCreate(BaseModel):
-    name: str
-    category: str
-    short_description: str
-    long_description: Optional[str] = None
-    care_instructions: Optional[str] = None
-    images: List[str] = []
-    prices_by_size: List[PriceVariation] = []
-    has_color_supplement: bool = False
-    color_supplement_amount: float = 20.0
-    product_type: str = "extension"
-    status: str = "active"
-    badge: Optional[str] = None
-    lace_types: List[str] = []
-    is_raw_hair: bool = False
-    is_bulk: bool = False
+def get_email_base_styles():
+    """Return common email styles"""
+    return """
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=Inter:wght@300;400;500;600&display=swap');
+        
+        body {
+            font-family: 'Inter', Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #1a1a1a;
+        }
+        
+        .email-container {
+            max-width: 600px;
+            margin: 0 auto;
+            background-color: #1a1a1a;
+        }
+        
+        .header {
+            background-color: #1a1a1a;
+            padding: 30px;
+            text-align: center;
+            border-bottom: 1px solid #C9A84C;
+        }
+        
+        .logo {
+            font-family: 'Playfair Display', Georgia, serif;
+            color: #C9A84C;
+            font-size: 28px;
+            font-weight: 700;
+            letter-spacing: 2px;
+        }
+        
+        .content {
+            background-color: #FAFAFA;
+            padding: 40px 30px;
+        }
+        
+        h1 {
+            font-family: 'Playfair Display', Georgia, serif;
+            color: #1a1a1a;
+            font-size: 24px;
+            margin: 0 0 20px 0;
+        }
+        
+        h2 {
+            font-family: 'Playfair Display', Georgia, serif;
+            color: #C9A84C;
+            font-size: 18px;
+            margin: 25px 0 15px 0;
+        }
+        
+        p {
+            color: #333;
+            font-size: 15px;
+            line-height: 1.6;
+            margin: 0 0 15px 0;
+        }
+        
+        .highlight-box {
+            background-color: #1a1a1a;
+            color: #FAFAFA;
+            padding: 20px;
+            margin: 20px 0;
+            border-left: 4px solid #C9A84C;
+        }
+        
+        .highlight-box strong {
+            color: #C9A84C;
+        }
+        
+        .btn-gold {
+            display: inline-block;
+            background: linear-gradient(135deg, #C9A84C 0%, #E8C96A 100%);
+            color: #1a1a1a !important;
+            text-decoration: none;
+            padding: 14px 30px;
+            font-weight: 600;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin: 10px 0;
+        }
+        
+        .btn-whatsapp {
+            display: inline-block;
+            background-color: #25D366;
+            color: #fff !important;
+            text-decoration: none;
+            padding: 12px 25px;
+            font-weight: 600;
+            font-size: 14px;
+            margin: 10px 0;
+        }
+        
+        .product-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        
+        .product-table th {
+            background-color: #1a1a1a;
+            color: #C9A84C;
+            padding: 12px;
+            text-align: left;
+            font-size: 12px;
+            text-transform: uppercase;
+        }
+        
+        .product-table td {
+            padding: 12px;
+            border-bottom: 1px solid #eee;
+            font-size: 14px;
+        }
+        
+        .total-row td {
+            font-weight: 600;
+            border-top: 2px solid #1a1a1a;
+        }
+        
+        .footer {
+            background-color: #1a1a1a;
+            padding: 30px;
+            text-align: center;
+            color: #888;
+            font-size: 12px;
+        }
+        
+        .footer a {
+            color: #C9A84C;
+            text-decoration: none;
+        }
+        
+        .success-icon {
+            width: 60px;
+            height: 60px;
+            background-color: #22c55e;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 20px;
+        }
+        
+        .appointment-card {
+            background: linear-gradient(135deg, #1a1a1a 0%, #2a2a2a 100%);
+            color: #FAFAFA;
+            padding: 25px;
+            margin: 20px 0;
+        }
+        
+        .appointment-card .detail {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(201, 168, 76, 0.2);
+        }
+        
+        .appointment-card .label {
+            color: #888;
+        }
+        
+        .appointment-card .value {
+            color: #C9A84C;
+            font-weight: 500;
+        }
+    </style>
+    """
 
 
-class ProductUpdate(BaseModel):
-    name: Optional[str] = None
-    category: Optional[str] = None
-    short_description: Optional[str] = None
-    long_description: Optional[str] = None
-    care_instructions: Optional[str] = None
-    images: Optional[List[str]] = None
-    prices_by_size: Optional[List[PriceVariation]] = None
-    has_color_supplement: Optional[bool] = None
-    color_supplement_amount: Optional[float] = None
-    product_type: Optional[str] = None
-    status: Optional[str] = None
-    badge: Optional[str] = None
-    lace_types: Optional[List[str]] = None
-    is_raw_hair: Optional[bool] = None
-    is_bulk: Optional[bool] = None
+def get_email_header():
+    """Return email header HTML"""
+    return f"""
+    <div class="header">
+        <div class="logo">{SALON_NAME}</div>
+        <p style="color: #888; font-size: 12px; margin: 10px 0 0 0;">Extensions & Perruques de Luxe</p>
+    </div>
+    """
 
 
-# ============== SITE CONTENT MODELS ==============
+def get_email_footer():
+    """Return email footer HTML"""
+    return f"""
+    <div class="footer">
+        <p style="color: #C9A84C; font-size: 14px; margin-bottom: 15px;">✦ {SALON_NAME} ✦</p>
+        <p>{SALON_ADDRESS}</p>
+        <p>{SALON_PHONE} • {SALON_EMAIL}</p>
+        <p style="margin-top: 15px;">
+            <a href="{WHATSAPP_LINK}">WhatsApp</a> • 
+            <a href="https://kyrios-salon.ch">Site Web</a>
+        </p>
+        <p style="margin-top: 20px; color: #666;">
+            Horaires: {SALON_HOURS}
+        </p>
+    </div>
+    """
 
-class HeroContent(BaseModel):
-    title: str = "Lyrias'Hair"
-    subtitle: str = "Extensions & Perruques de Luxe"
-    background_image: Optional[str] = None  # URL de l'image héros (1920x1080 recommandé)
-    cta_button_1_text: str = "Découvrir la Collection"
-    cta_button_1_link: str = "/boutique"
-    cta_button_2_text: str = "Réserver au Salon"
-    cta_button_2_link: str = "#reservation"
+
+# ============== EMAIL TEMPLATES ==============
+
+def email_order_confirmation(order: Dict) -> tuple:
+    """Email 1: Order Confirmation"""
+    subject = f"✨ Votre commande Kyrios Salon est confirmée — N°{order['order_number']}"
+    
+    # Build products table
+    products_html = ""
+    for item in order.get('items', []):
+        products_html += f"""
+        <tr>
+            <td>{item.get('product_name', 'Produit')}</td>
+            <td>{item.get('variation', '-')}</td>
+            <td style="text-align: center;">{item.get('quantity', 1)}</td>
+            <td style="text-align: right;">{item.get('unit_price', 0):.2f} CHF</td>
+        </tr>
+        """
+    
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        {get_email_base_styles()}
+    </head>
+    <body>
+        <div class="email-container">
+            {get_email_header()}
+            
+            <div class="content">
+                <h1>Merci pour votre commande !</h1>
+                
+                <p>Bonjour <strong>{order.get('customer_name', '').split()[0]}</strong>,</p>
+                
+                <p>Nous avons bien reçu votre commande et nous allons la préparer avec le plus grand soin.</p>
+                
+                <div class="highlight-box">
+                    <strong>Numéro de commande:</strong> {order['order_number']}<br>
+                    <strong>Date:</strong> {datetime.now().strftime('%d/%m/%Y à %H:%M')}
+                </div>
+                
+                <h2>Récapitulatif de votre commande</h2>
+                
+                <table class="product-table">
+                    <thead>
+                        <tr>
+                            <th>Produit</th>
+                            <th>Taille</th>
+                            <th style="text-align: center;">Qté</th>
+                            <th style="text-align: right;">Prix</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {products_html}
+                        <tr class="total-row">
+                            <td colspan="3"><strong>Sous-total</strong></td>
+                            <td style="text-align: right;"><strong>{order.get('total', 0):.2f} CHF</strong></td>
+                        </tr>
+                        <tr>
+                            <td colspan="3" style="color: #22c55e;">Acompte versé</td>
+                            <td style="text-align: right; color: #22c55e;">-{order.get('amount_paid', 0):.2f} CHF</td>
+                        </tr>
+                        <tr>
+                            <td colspan="3" style="color: #C9A84C;"><strong>Solde restant</strong></td>
+                            <td style="text-align: right; color: #C9A84C;"><strong>{order.get('remaining_to_pay', 0):.2f} CHF</strong></td>
+                        </tr>
+                    </tbody>
+                </table>
+                
+                <h2>Mode de livraison</h2>
+                <p>{order.get('delivery_method', 'Retrait au salon')}</p>
+                
+                <p style="text-align: center; margin-top: 30px;">
+                    <a href="{WHATSAPP_LINK}" class="btn-whatsapp">Une question ? Contactez-nous</a>
+                </p>
+            </div>
+            
+            {get_email_footer()}
+        </div>
+    </body>
+    </html>
+    """
+    
+    return subject, html
 
 
-class SocialLinks(BaseModel):
-    instagram: Optional[str] = None
-    facebook: Optional[str] = None
-    tiktok: Optional[str] = None
-    youtube: Optional[str] = None
+def email_deposit_received(order: Dict) -> tuple:
+    """Email 2: Deposit Received"""
+    subject = f"💛 Acompte reçu — Votre commande est en préparation"
+    
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        {get_email_base_styles()}
+    </head>
+    <body>
+        <div class="email-container">
+            {get_email_header()}
+            
+            <div class="content">
+                <div style="text-align: center; margin-bottom: 30px;">
+                    <div style="width: 60px; height: 60px; background-color: #22c55e; border-radius: 50%; margin: 0 auto 15px; display: flex; align-items: center; justify-content: center;">
+                        <span style="font-size: 30px; color: white;">✓</span>
+                    </div>
+                    <h1 style="color: #22c55e;">Acompte reçu avec succès !</h1>
+                </div>
+                
+                <p>Bonjour <strong>{order.get('customer_name', '').split()[0]}</strong>,</p>
+                
+                <p>Nous confirmons la réception de votre acompte de <strong style="color: #C9A84C;">{order.get('amount_paid', 50):.2f} CHF</strong> pour votre commande.</p>
+                
+                <div class="highlight-box">
+                    <strong>Commande:</strong> {order['order_number']}<br>
+                    <strong>Acompte reçu:</strong> {order.get('amount_paid', 50):.2f} CHF<br>
+                    <strong>Solde restant:</strong> {order.get('remaining_to_pay', 0):.2f} CHF
+                </div>
+                
+                <p>Notre équipe prépare votre commande avec amour et attention. Nous vous tiendrons informée dès qu'elle sera prête !</p>
+                
+                <p style="background-color: #FEF3C7; padding: 15px; border-radius: 4px; color: #92400E;">
+                    💡 <strong>Le solde de {order.get('remaining_to_pay', 0):.2f} CHF</strong> sera à régler lors du retrait de votre commande.
+                </p>
+                
+                <p style="text-align: center; margin-top: 30px;">
+                    <a href="{WHATSAPP_LINK}" class="btn-whatsapp">Une question sur WhatsApp</a>
+                </p>
+            </div>
+            
+            {get_email_footer()}
+        </div>
+    </body>
+    </html>
+    """
+    
+    return subject, html
 
 
-class SalonInfo(BaseModel):
-    address: str = "Rue du Pont-de-Perrette 8, 1700 Fribourg"
-    phone: str = "+41 78 848 08 67"
-    email: str = "clients@kyrios-salon.ch"
-    salon_image: Optional[str] = None  # URL de l'image du salon (1920x800 recommandé)
-    social_links: SocialLinks = Field(default_factory=SocialLinks)
-    hours: Dict[str, str] = {
-        "monday": "Fermé",
-        "tuesday": "Fermé",
-        "wednesday": "7h30 - 18h30",
-        "thursday": "7h30 - 18h30",
-        "friday": "7h30 - 18h30",
-        "saturday": "7h30 - 18h30",
-        "sunday": "Fermé"
+def email_order_ready(order: Dict) -> tuple:
+    """Email 3: Order Ready"""
+    subject = f"🎉 Votre commande est prête — Kyrios Salon"
+    
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        {get_email_base_styles()}
+    </head>
+    <body>
+        <div class="email-container">
+            {get_email_header()}
+            
+            <div class="content">
+                <div style="text-align: center; margin-bottom: 30px;">
+                    <span style="font-size: 50px;">🎉</span>
+                    <h1>Votre commande est prête !</h1>
+                </div>
+                
+                <p>Bonjour <strong>{order.get('customer_name', '').split()[0]}</strong>,</p>
+                
+                <p>Excellente nouvelle ! Votre commande <strong>{order['order_number']}</strong> est prête et vous attend au salon.</p>
+                
+                <div class="highlight-box">
+                    <strong style="font-size: 18px;">📍 Venez la récupérer:</strong><br><br>
+                    <strong>{SALON_ADDRESS}</strong><br>
+                    <span style="color: #888;">Horaires: {SALON_HOURS}</span>
+                </div>
+                
+                {'<p style="background-color: #FEF3C7; padding: 15px; color: #92400E;"><strong>💰 Solde à régler:</strong> ' + str(order.get("remaining_to_pay", 0)) + ' CHF</p>' if order.get('remaining_to_pay', 0) > 0 else ''}
+                
+                <p>Nous avons hâte de vous voir !</p>
+                
+                <p style="text-align: center; margin-top: 30px;">
+                    <a href="{WHATSAPP_LINK}" class="btn-whatsapp">Prévenir de mon arrivée</a>
+                </p>
+            </div>
+            
+            {get_email_footer()}
+        </div>
+    </body>
+    </html>
+    """
+    
+    return subject, html
+
+
+def email_appointment_confirmed(appointment: Dict) -> tuple:
+    """Email 4: Appointment Confirmation"""
+    subject = f"📅 RDV confirmé — {appointment['service_name']} le {appointment['appointment_date']}"
+    
+    # Format date
+    date_obj = datetime.strptime(appointment['appointment_date'], '%Y-%m-%d')
+    formatted_date = date_obj.strftime('%A %d %B %Y').capitalize()
+    
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        {get_email_base_styles()}
+    </head>
+    <body>
+        <div class="email-container">
+            {get_email_header()}
+            
+            <div class="content">
+                <div style="text-align: center; margin-bottom: 30px;">
+                    <span style="font-size: 50px;">📅</span>
+                    <h1>Rendez-vous confirmé !</h1>
+                </div>
+                
+                <p>Bonjour <strong>{appointment.get('customer_name', '').split()[0]}</strong>,</p>
+                
+                <p>Votre rendez-vous est confirmé. Nous avons hâte de vous accueillir !</p>
+                
+                <div class="appointment-card">
+                    <div class="detail">
+                        <span class="label">Service</span>
+                        <span class="value">{appointment['service_name']}</span>
+                    </div>
+                    <div class="detail">
+                        <span class="label">Date</span>
+                        <span class="value">{formatted_date}</span>
+                    </div>
+                    <div class="detail">
+                        <span class="label">Heure</span>
+                        <span class="value">{appointment['start_time']} - {appointment['end_time']}</span>
+                    </div>
+                    <div class="detail">
+                        <span class="label">Durée estimée</span>
+                        <span class="value">{appointment['duration_minutes'] // 60}h{appointment['duration_minutes'] % 60 if appointment['duration_minutes'] % 60 > 0 else ''}</span>
+                    </div>
+                    <div class="detail" style="border-bottom: none;">
+                        <span class="label">Acompte payé</span>
+                        <span class="value" style="color: #22c55e;">✓ 20 CHF</span>
+                    </div>
+                </div>
+                
+                <div class="highlight-box">
+                    <strong>📍 Adresse:</strong><br>
+                    {SALON_ADDRESS}
+                </div>
+                
+                <p style="background-color: #FEF3C7; padding: 15px; color: #92400E;">
+                    💰 <strong>Solde à régler au salon:</strong> {appointment['service_price'] - 20:.2f} CHF
+                </p>
+                
+                <p style="text-align: center; margin-top: 30px;">
+                    <a href="#" class="btn-gold">Ajouter à mon calendrier</a>
+                </p>
+                
+                <p style="text-align: center;">
+                    <a href="{WHATSAPP_LINK}" class="btn-whatsapp">Contacter sur WhatsApp</a>
+                </p>
+            </div>
+            
+            {get_email_footer()}
+        </div>
+    </body>
+    </html>
+    """
+    
+    return subject, html
+
+
+def email_appointment_reminder(appointment: Dict) -> tuple:
+    """Email 5: Appointment Reminder (24h before)"""
+    subject = f"⏰ Rappel — Votre RDV demain à {appointment['start_time']} chez Kyrios Salon"
+    
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        {get_email_base_styles()}
+    </head>
+    <body>
+        <div class="email-container">
+            {get_email_header()}
+            
+            <div class="content">
+                <div style="text-align: center; margin-bottom: 30px;">
+                    <span style="font-size: 50px;">⏰</span>
+                    <h1>Rappel de votre rendez-vous</h1>
+                </div>
+                
+                <p>Bonjour <strong>{appointment.get('customer_name', '').split()[0]}</strong>,</p>
+                
+                <p>C'est demain ! Nous vous attendons pour votre rendez-vous.</p>
+                
+                <div class="appointment-card">
+                    <div class="detail">
+                        <span class="label">Service</span>
+                        <span class="value">{appointment['service_name']}</span>
+                    </div>
+                    <div class="detail">
+                        <span class="label">Demain à</span>
+                        <span class="value" style="font-size: 20px;">{appointment['start_time']}</span>
+                    </div>
+                    <div class="detail" style="border-bottom: none;">
+                        <span class="label">Durée</span>
+                        <span class="value">{appointment['duration_minutes'] // 60}h{appointment['duration_minutes'] % 60 if appointment['duration_minutes'] % 60 > 0 else ''}</span>
+                    </div>
+                </div>
+                
+                <div class="highlight-box">
+                    <strong>📍 Nous vous attendons:</strong><br>
+                    {SALON_ADDRESS}<br>
+                    <span style="color: #888;">Merci d'arriver 5 minutes avant l'heure prévue</span>
+                </div>
+                
+                <p>À très bientôt !</p>
+                
+                <p style="text-align: center; margin-top: 30px;">
+                    <a href="{WHATSAPP_LINK}" class="btn-whatsapp">Besoin de modifier ? WhatsApp</a>
+                </p>
+            </div>
+            
+            {get_email_footer()}
+        </div>
+    </body>
+    </html>
+    """
+    
+    return subject, html
+
+
+# ============== SEND EMAIL FUNCTION ==============
+
+async def send_email(to_email: str, subject: str, html_content: str, related_to: str = None) -> bool:
+    """
+    Send an email using SendGrid or SMTP
+    In demo mode, logs the email instead of sending
+    """
+    from motor.motor_asyncio import AsyncIOMotorClient
+    
+    # Log notification to database
+    mongo_url = os.environ['MONGO_URL']
+    client = AsyncIOMotorClient(mongo_url)
+    db = client[os.environ['DB_NAME']]
+    
+    log_entry = {
+        "id": f"log_{datetime.now().strftime('%Y%m%d%H%M%S')}_{hash(to_email) % 10000}",
+        "type": "email",
+        "recipient": to_email,
+        "subject": subject,
+        "message": f"HTML email ({len(html_content)} chars)",
+        "status": "pending",
+        "related_to": related_to,
+        "created_at": datetime.now(timezone.utc).isoformat()
     }
-
-
-class Testimonial(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    client_city: Optional[str] = None
-    text: str
-    rating: int = 5  # 1-5 stars
-    is_visible: bool = True
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-
-class SiteContent(BaseModel):
-    id: str = "site_content_main"
-    hero: HeroContent = Field(default_factory=HeroContent)
-    salon_info: SalonInfo = Field(default_factory=SalonInfo)
-    testimonials: List[Testimonial] = []
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-
-# ============== ANNOUNCEMENT MODELS ==============
-
-class Announcement(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    type: str  # "promo", "annonce", "evenement"
-    title: str
-    description: str
-    image_url: Optional[str] = None
-    display_formats: List[str] = []  # ["banner", "popup", "homepage"]
-    start_date: str  # ISO date string
-    end_date: str  # ISO date string
-    cta_text: Optional[str] = None
-    cta_link: Optional[str] = None
-    is_active: bool = True
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-
-class AnnouncementCreate(BaseModel):
-    type: str
-    title: str
-    description: str
-    image_url: Optional[str] = None
-    display_formats: List[str] = []
-    start_date: str
-    end_date: str
-    cta_text: Optional[str] = None
-    cta_link: Optional[str] = None
-    is_active: bool = True
-
-
-# ============== MEDIA LIBRARY MODELS ==============
-
-class MediaItem(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    filename: str
-    url: str
-    file_type: str  # "image/jpeg", "image/png", "image/webp"
-    file_size: int  # bytes
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-
-# ============== NOTIFICATION LOG MODELS ==============
-
-class NotificationLog(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    type: str  # "email", "whatsapp"
-    recipient: str
-    subject: Optional[str] = None  # For emails
-    message: str
-    status: str = "sent"  # "sent", "failed", "pending"
-    related_to: Optional[str] = None  # order_id or appointment_id
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-
-# ============== PRODUCT ROUTES ==============
-
-@cms_router.get("/admin/products-advanced")
-async def get_all_products_advanced():
-    """Get all products with advanced fields"""
-    products = await db.products.find({}, {"_id": 0}).to_list(1000)
-    return products
-
-
-@cms_router.post("/admin/products")
-async def create_product(product: ProductCreate):
-    """Create a new product"""
-    product_doc = ProductAdvanced(
-        **product.model_dump()
-    )
     
-    product_dict = product_doc.model_dump()
-    product_dict['created_at'] = product_dict['created_at'].isoformat()
-    product_dict['updated_at'] = product_dict['updated_at'].isoformat()
+    if DEMO_MODE:
+        # Demo mode - just log
+        logger.info(f"[DEMO] Would send email to {to_email}: {subject}")
+        log_entry["status"] = "sent"
+        log_entry["message"] = f"[DEMO MODE] {subject}"
+        await db.notification_logs.insert_one(log_entry)
+        return True
     
-    # Also add legacy fields for compatibility
-    product_dict['image_url'] = product_dict['images'][0] if product_dict['images'] else ''
-    product_dict['description'] = product_dict['short_description']
-    
-    await db.products.insert_one(product_dict)
-    
-    return {"id": product_doc.id, "message": "Produit créé avec succès"}
-
-
-@cms_router.put("/admin/products/{product_id}")
-async def update_product(product_id: str, product: ProductUpdate):
-    """Update an existing product"""
-    update_data = {k: v for k, v in product.model_dump().items() if v is not None}
-    
-    if not update_data:
-        raise HTTPException(status_code=400, detail="Aucune donnée à mettre à jour")
-    
-    update_data['updated_at'] = datetime.now(timezone.utc).isoformat()
-    
-    # Update legacy fields for compatibility
-    if 'images' in update_data and update_data['images']:
-        update_data['image_url'] = update_data['images'][0]
-    if 'short_description' in update_data:
-        update_data['description'] = update_data['short_description']
-    
-    result = await db.products.update_one(
-        {"id": product_id},
-        {"$set": update_data}
-    )
-    
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Produit non trouvé")
-    
-    return {"message": "Produit mis à jour avec succès"}
-
-
-@cms_router.delete("/admin/products/{product_id}")
-async def delete_product(product_id: str):
-    """Delete a product"""
-    result = await db.products.delete_one({"id": product_id})
-    
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Produit non trouvé")
-    
-    return {"message": "Produit supprimé avec succès"}
-
-
-# ============== SITE CONTENT ROUTES ==============
-
-@cms_router.get("/site-content")
-async def get_site_content():
-    """Get site content (public)"""
-    content = await db.site_content.find_one({"id": "site_content_main"}, {"_id": 0})
-    
-    if not content:
-        # Initialize with defaults
-        default_content = SiteContent()
-        content_dict = default_content.model_dump()
-        content_dict['updated_at'] = content_dict['updated_at'].isoformat()
-        await db.site_content.insert_one(content_dict)
-        return default_content.model_dump()
-    
-    # Normalize salon_info to include social_links (backwards compatibility)
-    if 'salon_info' in content:
-        salon_info = content['salon_info']
-        if 'social_links' not in salon_info:
-            # Migrate old instagram field to new structure
-            salon_info['social_links'] = {
-                'instagram': salon_info.get('instagram'),
-                'facebook': None,
-                'tiktok': None,
-                'youtube': None
-            }
-        if 'salon_image' not in salon_info:
-            salon_info['salon_image'] = None
-    
-    return content
-
-
-@cms_router.put("/admin/site-content/hero")
-async def update_hero_content(hero: HeroContent):
-    """Update hero section content"""
-    await db.site_content.update_one(
-        {"id": "site_content_main"},
-        {
-            "$set": {
-                "hero": hero.model_dump(),
-                "updated_at": datetime.now(timezone.utc).isoformat()
-            }
-        },
-        upsert=True
-    )
-    return {"message": "Section Hero mise à jour"}
-
-
-@cms_router.put("/admin/site-content/salon-info")
-async def update_salon_info(salon_info: SalonInfo):
-    """Update salon info content"""
-    await db.site_content.update_one(
-        {"id": "site_content_main"},
-        {
-            "$set": {
-                "salon_info": salon_info.model_dump(),
-                "updated_at": datetime.now(timezone.utc).isoformat()
-            }
-        },
-        upsert=True
-    )
-    return {"message": "Informations salon mises à jour"}
-
-
-# ============== TESTIMONIALS ROUTES ==============
-
-@cms_router.get("/testimonials")
-async def get_testimonials(visible_only: bool = True):
-    """Get testimonials (public)"""
-    content = await db.site_content.find_one({"id": "site_content_main"}, {"_id": 0})
-    
-    if not content or 'testimonials' not in content:
-        return []
-    
-    testimonials = content.get('testimonials', [])
-    
-    if visible_only:
-        testimonials = [t for t in testimonials if t.get('is_visible', True)]
-    
-    return testimonials
-
-
-@cms_router.post("/admin/testimonials")
-async def create_testimonial(testimonial: Testimonial):
-    """Create a new testimonial"""
-    testimonial_dict = testimonial.model_dump()
-    testimonial_dict['created_at'] = testimonial_dict['created_at'].isoformat()
-    
-    await db.site_content.update_one(
-        {"id": "site_content_main"},
-        {
-            "$push": {"testimonials": testimonial_dict},
-            "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}
-        },
-        upsert=True
-    )
-    
-    return {"id": testimonial.id, "message": "Témoignage créé avec succès"}
-
-
-@cms_router.put("/admin/testimonials/{testimonial_id}")
-async def update_testimonial(testimonial_id: str, testimonial: Testimonial):
-    """Update a testimonial"""
-    content = await db.site_content.find_one({"id": "site_content_main"}, {"_id": 0})
-    
-    if not content or 'testimonials' not in content:
-        raise HTTPException(status_code=404, detail="Témoignage non trouvé")
-    
-    testimonials = content.get('testimonials', [])
-    updated = False
-    
-    for i, t in enumerate(testimonials):
-        if t.get('id') == testimonial_id:
-            testimonial_dict = testimonial.model_dump()
-            testimonial_dict['id'] = testimonial_id
-            if isinstance(testimonial_dict.get('created_at'), datetime):
-                testimonial_dict['created_at'] = testimonial_dict['created_at'].isoformat()
-            testimonials[i] = testimonial_dict
-            updated = True
-            break
-    
-    if not updated:
-        raise HTTPException(status_code=404, detail="Témoignage non trouvé")
-    
-    await db.site_content.update_one(
-        {"id": "site_content_main"},
-        {
-            "$set": {
-                "testimonials": testimonials,
-                "updated_at": datetime.now(timezone.utc).isoformat()
-            }
-        }
-    )
-    
-    return {"message": "Témoignage mis à jour"}
-
-
-@cms_router.delete("/admin/testimonials/{testimonial_id}")
-async def delete_testimonial(testimonial_id: str):
-    """Delete a testimonial"""
-    await db.site_content.update_one(
-        {"id": "site_content_main"},
-        {
-            "$pull": {"testimonials": {"id": testimonial_id}},
-            "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}
-        }
-    )
-    
-    return {"message": "Témoignage supprimé"}
-
-
-# ============== ANNOUNCEMENTS ROUTES ==============
-
-@cms_router.get("/announcements")
-async def get_active_announcements():
-    """Get active announcements (public)"""
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    
-    announcements = await db.announcements.find({
-        "is_active": True,
-        "start_date": {"$lte": now},
-        "end_date": {"$gte": now}
-    }, {"_id": 0}).to_list(100)
-    
-    return announcements
-
-
-@cms_router.get("/admin/announcements")
-async def get_all_announcements():
-    """Get all announcements (admin)"""
-    announcements = await db.announcements.find({}, {"_id": 0}).sort("created_at", -1).to_list(100)
-    
-    # Mark expired announcements
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    for a in announcements:
-        a['is_expired'] = a.get('end_date', '') < now
-    
-    return announcements
-
-
-@cms_router.post("/admin/announcements")
-async def create_announcement(announcement: AnnouncementCreate):
-    """Create a new announcement"""
-    announcement_doc = Announcement(**announcement.model_dump())
-    
-    announcement_dict = announcement_doc.model_dump()
-    announcement_dict['created_at'] = announcement_dict['created_at'].isoformat()
-    
-    await db.announcements.insert_one(announcement_dict)
-    
-    return {"id": announcement_doc.id, "message": "Annonce créée avec succès"}
-
-
-@cms_router.put("/admin/announcements/{announcement_id}")
-async def update_announcement(announcement_id: str, announcement: AnnouncementCreate):
-    """Update an announcement"""
-    update_data = announcement.model_dump()
-    update_data['updated_at'] = datetime.now(timezone.utc).isoformat()
-    
-    result = await db.announcements.update_one(
-        {"id": announcement_id},
-        {"$set": update_data}
-    )
-    
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Annonce non trouvée")
-    
-    return {"message": "Annonce mise à jour"}
-
-
-@cms_router.delete("/admin/announcements/{announcement_id}")
-async def delete_announcement(announcement_id: str):
-    """Delete an announcement"""
-    result = await db.announcements.delete_one({"id": announcement_id})
-    
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Annonce non trouvée")
-    
-    return {"message": "Annonce supprimée"}
-
-
-# ============== MEDIA LIBRARY ROUTES ==============
-
-@cms_router.get("/admin/media")
-async def get_media_library():
-    """Get all media items"""
-    media = await db.media_library.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
-    return media
-
-
-@cms_router.post("/admin/media/upload")
-async def upload_media(file_data: str = Form(...), filename: str = Form(...)):
-    """
-    Upload a media file (base64 encoded)
-    In production, this would upload to cloud storage
-    For demo, we store base64 and generate a data URL
-    """
     try:
-        # Validate file type
-        allowed_types = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg']
-        
-        # Parse base64 data
-        if ',' in file_data:
-            header, data = file_data.split(',', 1)
-            file_type = header.split(';')[0].split(':')[1] if ':' in header else 'image/jpeg'
+        if SENDGRID_API_KEY:
+            # Use SendGrid
+            import sendgrid
+            from sendgrid.helpers.mail import Mail, Email, To, Content
+            
+            sg = sendgrid.SendGridAPIClient(api_key=SENDGRID_API_KEY)
+            message = Mail(
+                from_email=Email(SMTP_USER, SALON_NAME),
+                to_emails=To(to_email),
+                subject=subject,
+                html_content=Content("text/html", html_content)
+            )
+            response = sg.send(message)
+            
+            if response.status_code in [200, 201, 202]:
+                log_entry["status"] = "sent"
+                await db.notification_logs.insert_one(log_entry)
+                return True
+            else:
+                log_entry["status"] = "failed"
+                await db.notification_logs.insert_one(log_entry)
+                return False
+                
+        elif SMTP_HOST and SMTP_PASS:
+            # Use SMTP
+            import smtplib
+            from email.mime.text import MIMEText
+            from email.mime.multipart import MIMEMultipart
+            
+            msg = MIMEMultipart('alternative')
+            msg['Subject'] = subject
+            msg['From'] = f"{SALON_NAME} <{SMTP_USER}>"
+            msg['To'] = to_email
+            
+            html_part = MIMEText(html_content, 'html')
+            msg.attach(html_part)
+            
+            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
+                server.login(SMTP_USER, SMTP_PASS)
+                server.sendmail(SMTP_USER, to_email, msg.as_string())
+            
+            log_entry["status"] = "sent"
+            await db.notification_logs.insert_one(log_entry)
+            return True
         else:
-            data = file_data
-            file_type = 'image/jpeg'
-        
-        if file_type not in allowed_types:
-            raise HTTPException(status_code=400, detail="Type de fichier non autorisé")
-        
-        # Calculate file size
-        file_size = len(base64.b64decode(data))
-        
-        # Max 5MB
-        if file_size > 5 * 1024 * 1024:
-            raise HTTPException(status_code=400, detail="Fichier trop volumineux (max 5 MB)")
-        
-        # Create media item
-        media_item = MediaItem(
-            filename=filename,
-            url=file_data,  # Store as data URL for demo
-            file_type=file_type,
-            file_size=file_size
-        )
-        
-        media_dict = media_item.model_dump()
-        media_dict['created_at'] = media_dict['created_at'].isoformat()
-        
-        await db.media_library.insert_one(media_dict)
-        
-        return {
-            "id": media_item.id,
-            "url": media_item.url,
-            "message": "Image uploadée avec succès"
-        }
-        
+            # Fallback to demo mode
+            logger.warning(f"No email credentials - logging only: {subject}")
+            log_entry["status"] = "sent"
+            log_entry["message"] = f"[NO CREDENTIALS] {subject}"
+            await db.notification_logs.insert_one(log_entry)
+            return True
+            
     except Exception as e:
-        logger.error(f"Media upload error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Email send error: {e}")
+        log_entry["status"] = "failed"
+        log_entry["message"] = f"Error: {str(e)}"
+        await db.notification_logs.insert_one(log_entry)
+        return False
 
 
-@cms_router.delete("/admin/media/{media_id}")
-async def delete_media(media_id: str):
-    """Delete a media item"""
-    result = await db.media_library.delete_one({"id": media_id})
-    
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Média non trouvé")
-    
-    return {"message": "Média supprimé"}
+# ============== PUBLIC FUNCTIONS ==============
+
+async def send_order_confirmation_email(order: Dict) -> bool:
+    """Send order confirmation email"""
+    subject, html = email_order_confirmation(order)
+    return await send_email(order['customer_email'], subject, html, order.get('id'))
 
 
-# ============== NOTIFICATION LOG ROUTES ==============
-
-@cms_router.get("/admin/notification-logs")
-async def get_notification_logs(limit: int = 50):
-    """Get notification logs for admin dashboard"""
-    logs = await db.notification_logs.find({}, {"_id": 0}).sort("created_at", -1).to_list(limit)
-    return logs
+async def send_deposit_received_email(order: Dict) -> bool:
+    """Send deposit received email"""
+    subject, html = email_deposit_received(order)
+    return await send_email(order['customer_email'], subject, html, order.get('id'))
 
 
-@cms_router.post("/admin/notification-logs")
-async def create_notification_log(log: NotificationLog):
-    """Create a notification log entry (used by email/whatsapp services)"""
-    log_dict = log.model_dump()
-    log_dict['created_at'] = log_dict['created_at'].isoformat()
-    
-    await db.notification_logs.insert_one(log_dict)
-    
-    return {"id": log.id}
+async def send_order_ready_email(order: Dict) -> bool:
+    """Send order ready email"""
+    subject, html = email_order_ready(order)
+    return await send_email(order['customer_email'], subject, html, order.get('id'))
 
 
-# Helper function to log notifications (used by email and whatsapp services)
-async def log_notification(
-    notification_type: str,
-    recipient: str,
-    message: str,
-    subject: str = None,
-    related_to: str = None,
-    status: str = "sent"
-):
-    """Log a notification to the database"""
-    log = NotificationLog(
-        type=notification_type,
-        recipient=recipient,
-        subject=subject,
-        message=message,
-        status=status,
-        related_to=related_to
-    )
-    
-    log_dict = log.model_dump()
-    log_dict['created_at'] = log_dict['created_at'].isoformat()
-    
-    await db.notification_logs.insert_one(log_dict)
-    
-    return log.id
+async def send_appointment_confirmation_email(appointment: Dict) -> bool:
+    """Send appointment confirmation email"""
+    subject, html = email_appointment_confirmed(appointment)
+    return await send_email(appointment['customer_email'], subject, html, appointment.get('id'))
+
+
+async def send_appointment_reminder_email(appointment: Dict) -> bool:
+    """Send appointment reminder email (24h before)"""
+    subject, html = email_appointment_reminder(appointment)
+    return await send_email(appointment['customer_email'], subject, html, appointment.get('id'))
