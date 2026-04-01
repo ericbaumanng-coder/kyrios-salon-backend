@@ -11,12 +11,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Email Configuration
-SMTP_HOST = os.environ.get('SMTP_HOST', 'smtp.hostinger.com')
+SMTP_HOST = os.environ.get('SMTP_HOST', 'mail.kyrios-salon.ch')
 SMTP_PORT = int(os.environ.get('SMTP_PORT', '465'))
 SMTP_USER = os.environ.get('SMTP_USER', 'clients@kyrios-salon.ch')
-SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD', '')
-FROM_NAME = "Kyrios Salon"
-FROM_EMAIL = "clients@kyrios-salon.ch"
+SMTP_PASSWORD = os.environ.get('SMTP_PASS', '')
+FROM_NAME = os.environ.get('SMTP_FROM_NAME', 'Kyrios Salon')
+FROM_EMAIL = os.environ.get('SMTP_FROM_EMAIL', 'clients@kyrios-salon.ch')
 
 WHATSAPP_LINK = "https://wa.me/41788480867"
 
@@ -567,3 +567,182 @@ async def send_order_ready(order: Dict) -> bool:
     subject = f"🎉 Votre commande est prête ! — Kyrios Salon"
     html_content = generate_order_ready_email(order)
     return await send_email(email, subject, html_content)
+
+
+# ============== APPOINTMENT EMAILS ==============
+
+def generate_appointment_confirmation_email(appointment: Dict) -> str:
+    """Generate appointment confirmation email"""
+    customer_name = appointment.get('customer_name', 'Client')
+    first_name = customer_name.split()[0] if customer_name else 'Client'
+    service_name = appointment.get('service_name', 'Service')
+    variation_size = appointment.get('variation_size', '')
+    thickness = appointment.get('thickness', '')
+    appointment_date = appointment.get('appointment_date', '')
+    start_time = appointment.get('start_time', '')
+    end_time = appointment.get('end_time', '')
+    price = appointment.get('price', 0)
+    deposit_paid = appointment.get('deposit_paid', 20)
+    remaining = price - deposit_paid if price > deposit_paid else 0
+    
+    # Format service details
+    service_details = service_name
+    if variation_size and variation_size != 'Unique':
+        service_details += f" ({variation_size})"
+    if thickness:
+        service_details += f" • Épaisseur {thickness}"
+    
+    content = f'''
+    <div class="celebration">
+        <div class="success-icon">✓</div>
+    </div>
+    
+    <h1 class="title">Rendez-vous confirmé ! 🎉</h1>
+    <p class="text">Bonjour {first_name},<br>Votre rendez-vous au salon est confirmé. Nous avons hâte de vous accueillir !</p>
+    
+    <div class="info-box" style="background: linear-gradient(135deg, #0D0D0D 0%, #1a1a1a 100%); padding: 24px; border-radius: 8px; margin: 24px 0;">
+        <p style="color: #C9A84C; font-size: 14px; margin-bottom: 8px;">📅 DATE & HEURE</p>
+        <p style="color: white; font-size: 20px; font-weight: 600;">{appointment_date}</p>
+        <p style="color: white; font-size: 18px;">{start_time} - {end_time}</p>
+    </div>
+    
+    <div class="info-box" style="padding: 20px; background-color: #f9f9f9; border-radius: 8px; margin: 16px 0;">
+        <p style="color: #666; font-size: 14px; margin-bottom: 8px;">✂️ SERVICE</p>
+        <p style="font-size: 18px; font-weight: 600; color: #0D0D0D;">{service_details}</p>
+    </div>
+    
+    <table style="width: 100%; margin: 24px 0; border-collapse: collapse;">
+        <tr style="border-bottom: 1px solid #eee;">
+            <td style="padding: 12px 0; color: #666;">Prix du service</td>
+            <td style="padding: 12px 0; text-align: right; font-weight: 600;">{price:.0f} CHF</td>
+        </tr>
+        <tr style="border-bottom: 1px solid #eee;">
+            <td style="padding: 12px 0; color: #22c55e;">✓ Acompte payé</td>
+            <td style="padding: 12px 0; text-align: right; color: #22c55e; font-weight: 600;">-{deposit_paid:.0f} CHF</td>
+        </tr>
+        <tr>
+            <td style="padding: 12px 0; font-weight: 600; color: #C9A84C;">Reste à payer au salon</td>
+            <td style="padding: 12px 0; text-align: right; font-weight: 600; font-size: 20px; color: #C9A84C;">{remaining:.0f} CHF</td>
+        </tr>
+    </table>
+    
+    <div style="background-color: #fef3cd; border: 1px solid #ffc107; padding: 16px; border-radius: 8px; margin: 24px 0;">
+        <p style="color: #856404; font-size: 14px; margin: 0;">
+            ⏰ <strong>Rappel :</strong> Merci d'arriver 5 minutes avant votre rendez-vous.
+            En cas d'empêchement, prévenez-nous au moins 24h à l'avance.
+        </p>
+    </div>
+    
+    <div style="text-align: center; margin: 24px 0;">
+        <p style="color: #666; font-size: 14px; margin-bottom: 12px;">Une question ?</p>
+        <a href="{WHATSAPP_LINK}?text=Bonjour, j'ai une question concernant mon rendez-vous du {appointment_date}" class="btn btn-whatsapp" style="display: inline-block; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: 600;">
+            💬 Nous contacter sur WhatsApp
+        </a>
+    </div>
+    
+    <div style="text-align: center; padding: 20px; background-color: #0D0D0D; border-radius: 8px;">
+        <p style="color: #C9A84C; font-size: 14px; margin-bottom: 8px;">📍 ADRESSE DU SALON</p>
+        <p style="color: white; font-size: 16px;">Rue du Pont-de-Perrette 8</p>
+        <p style="color: white; font-size: 16px;">1700 Fribourg, Suisse</p>
+    </div>
+    '''
+    
+    return get_base_template("Rendez-vous confirmé", content)
+
+
+def generate_salon_notification_email(appointment: Dict) -> str:
+    """Generate notification email for salon owner"""
+    customer_name = appointment.get('customer_name', 'Client')
+    customer_email = appointment.get('customer_email', '')
+    customer_phone = appointment.get('customer_phone', '')
+    service_name = appointment.get('service_name', 'Service')
+    variation_size = appointment.get('variation_size', '')
+    thickness = appointment.get('thickness', '')
+    appointment_date = appointment.get('appointment_date', '')
+    start_time = appointment.get('start_time', '')
+    end_time = appointment.get('end_time', '')
+    price = appointment.get('price', 0)
+    notes = appointment.get('notes', '')
+    
+    service_details = service_name
+    if variation_size and variation_size != 'Unique':
+        service_details += f" ({variation_size})"
+    if thickness:
+        service_details += f" • Épaisseur {thickness}"
+    
+    notes_section = f'''
+    <div style="background-color: #fff3cd; padding: 12px; border-radius: 4px; margin: 16px 0;">
+        <p style="color: #856404; font-size: 14px; margin: 0;"><strong>Note de la cliente :</strong> {notes}</p>
+    </div>
+    ''' if notes else ''
+    
+    content = f'''
+    <h1 class="title">🔔 Nouvelle réservation !</h1>
+    <p class="text">Une nouvelle cliente vient de réserver un rendez-vous.</p>
+    
+    <div style="background-color: #f0fdf4; padding: 16px; border-radius: 8px; border-left: 4px solid #22c55e; margin: 24px 0;">
+        <p style="color: #166534; font-size: 16px; font-weight: 600; margin: 0;">Acompte de 20 CHF payé ✓</p>
+    </div>
+    
+    <table style="width: 100%; margin: 24px 0; border-collapse: collapse;">
+        <tr style="border-bottom: 1px solid #eee;">
+            <td style="padding: 12px 0; color: #666; width: 40%;">Cliente</td>
+            <td style="padding: 12px 0; font-weight: 600;">{customer_name}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid #eee;">
+            <td style="padding: 12px 0; color: #666;">Email</td>
+            <td style="padding: 12px 0;"><a href="mailto:{customer_email}" style="color: #C9A84C;">{customer_email}</a></td>
+        </tr>
+        <tr style="border-bottom: 1px solid #eee;">
+            <td style="padding: 12px 0; color: #666;">Téléphone</td>
+            <td style="padding: 12px 0;"><a href="tel:{customer_phone}" style="color: #C9A84C;">{customer_phone}</a></td>
+        </tr>
+        <tr style="border-bottom: 1px solid #eee;">
+            <td style="padding: 12px 0; color: #666;">Date</td>
+            <td style="padding: 12px 0; font-weight: 600;">{appointment_date}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid #eee;">
+            <td style="padding: 12px 0; color: #666;">Horaire</td>
+            <td style="padding: 12px 0; font-weight: 600;">{start_time} - {end_time}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid #eee;">
+            <td style="padding: 12px 0; color: #666;">Service</td>
+            <td style="padding: 12px 0; font-weight: 600;">{service_details}</td>
+        </tr>
+        <tr>
+            <td style="padding: 12px 0; color: #666;">Prix total</td>
+            <td style="padding: 12px 0; font-weight: 600; color: #C9A84C; font-size: 18px;">{price:.0f} CHF</td>
+        </tr>
+    </table>
+    
+    {notes_section}
+    
+    <div style="text-align: center; margin: 24px 0;">
+        <a href="https://kyrios-salon.ch/admin" class="btn" style="display: inline-block; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: 600; background: linear-gradient(135deg, #C9A84C 0%, #B8973F 100%); color: #0D0D0D;">
+            📊 Voir dans le tableau de bord
+        </a>
+    </div>
+    '''
+    
+    return get_base_template("Nouvelle réservation", content)
+
+
+async def send_appointment_confirmation(appointment: Dict) -> bool:
+    """Send appointment confirmation email to customer"""
+    email = appointment.get('customer_email')
+    if not email:
+        return False
+    
+    subject = f"✨ Rendez-vous confirmé — {appointment.get('appointment_date', '')} — Kyrios Salon"
+    html_content = generate_appointment_confirmation_email(appointment)
+    return await send_email(email, subject, html_content)
+
+
+async def send_salon_notification(appointment: Dict) -> bool:
+    """Send notification email to salon owner"""
+    salon_email = "clients@kyrios-salon.ch"
+    
+    subject = f"🔔 Nouvelle réservation — {appointment.get('customer_name', 'Client')} — {appointment.get('appointment_date', '')}"
+    html_content = generate_salon_notification_email(appointment)
+    return await send_email(salon_email, subject, html_content)
+
