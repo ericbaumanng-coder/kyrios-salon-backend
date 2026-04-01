@@ -24,6 +24,7 @@ from email_service_enhanced import (
     send_order_ready_email, send_appointment_confirmation_email,
     send_appointment_reminder_email
 )
+from email_service import send_salon_notification
 from whatsapp_service_enhanced import (
     notify_new_order, notify_new_appointment, notify_appointment_reminder
 )
@@ -178,6 +179,37 @@ class PaymentTransaction(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
+
+# ============== WIGS (PERRUQUES) MODELS ==============
+
+class Wig(BaseModel):
+    """Wig product - no sizes, no colors, unique product"""
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    description: Optional[str] = None
+    image_url: str
+    price: float
+    is_available: bool = True
+    order: int = 0
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class WigCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    image_url: str
+    price: float
+    is_available: bool = True
+    order: int = 0
+
+class WigUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    image_url: Optional[str] = None
+    price: Optional[float] = None
+    is_available: Optional[bool] = None
+    order: Optional[int] = None
+
 # ============== PRODUCT ROUTES ==============
 
 @api_router.get("/")
@@ -203,6 +235,145 @@ async def get_product(product_id: str):
 async def get_categories():
     categories = await db.products.distinct("category")
     return {"categories": categories}
+
+
+# ============== WIGS (PERRUQUES) ROUTES ==============
+
+@api_router.get("/wigs")
+async def get_wigs():
+    """Get all available wigs"""
+    wigs = await db.wigs.find({"is_available": True}, {"_id": 0}).sort("order", 1).to_list(100)
+    return wigs
+
+@api_router.get("/wigs/all")
+async def get_all_wigs():
+    """Get all wigs (admin)"""
+    wigs = await db.wigs.find({}, {"_id": 0}).sort("order", 1).to_list(100)
+    return wigs
+
+@api_router.get("/wigs/{wig_id}")
+async def get_wig(wig_id: str):
+    """Get a single wig by ID"""
+    wig = await db.wigs.find_one({"id": wig_id}, {"_id": 0})
+    if not wig:
+        raise HTTPException(status_code=404, detail="Perruque non trouvée")
+    return wig
+
+@api_router.post("/admin/wigs")
+async def create_wig(wig: WigCreate):
+    """Create a new wig (admin)"""
+    new_wig = Wig(**wig.model_dump())
+    wig_dict = new_wig.model_dump()
+    wig_dict['created_at'] = wig_dict['created_at'].isoformat()
+    await db.wigs.insert_one(wig_dict)
+    return {"message": "Perruque créée", "id": new_wig.id}
+
+@api_router.put("/admin/wigs/{wig_id}")
+async def update_wig(wig_id: str, wig: WigUpdate):
+    """Update a wig (admin)"""
+    update_data = {k: v for k, v in wig.model_dump().items() if v is not None}
+    if not update_data:
+        raise HTTPException(status_code=400, detail="Aucune donnée à mettre à jour")
+    
+    result = await db.wigs.update_one({"id": wig_id}, {"$set": update_data})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Perruque non trouvée")
+    return {"message": "Perruque mise à jour"}
+
+@api_router.delete("/admin/wigs/{wig_id}")
+async def delete_wig(wig_id: str):
+    """Delete a wig (admin)"""
+    result = await db.wigs.delete_one({"id": wig_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Perruque non trouvée")
+    return {"message": "Perruque supprimée"}
+
+
+# ============== SHOP PRODUCTS (PRODUITS CAPILLAIRES) MODELS ==============
+
+class ShopProduct(BaseModel):
+    """Shop product - hair care products (shampoos, creams, oils, etc.)"""
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    description: Optional[str] = None
+    category: Optional[str] = None  # Shampoing, Crème, Huile, Sérum, Sèche-cheveux, etc.
+    image_url: str
+    price: float
+    is_available: bool = True
+    order: int = 0
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class ShopProductCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    category: Optional[str] = None
+    image_url: str
+    price: float
+    is_available: bool = True
+    order: int = 0
+
+class ShopProductUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+    image_url: Optional[str] = None
+    price: Optional[float] = None
+    is_available: Optional[bool] = None
+    order: Optional[int] = None
+
+
+# ============== SHOP PRODUCTS (PRODUITS CAPILLAIRES) ROUTES ==============
+
+@api_router.get("/shop-products")
+async def get_shop_products():
+    """Get all available shop products"""
+    products = await db.shop_products.find({"is_available": True}, {"_id": 0}).sort("order", 1).to_list(100)
+    return products
+
+@api_router.get("/shop-products/all")
+async def get_all_shop_products():
+    """Get all shop products (admin)"""
+    products = await db.shop_products.find({}, {"_id": 0}).sort("order", 1).to_list(100)
+    return products
+
+@api_router.get("/shop-products/{product_id}")
+async def get_shop_product(product_id: str):
+    """Get a single shop product by ID"""
+    product = await db.shop_products.find_one({"id": product_id}, {"_id": 0})
+    if not product:
+        raise HTTPException(status_code=404, detail="Produit non trouvé")
+    return product
+
+@api_router.post("/admin/shop-products")
+async def create_shop_product(product: ShopProductCreate):
+    """Create a new shop product (admin)"""
+    new_product = ShopProduct(**product.model_dump())
+    product_dict = new_product.model_dump()
+    product_dict['created_at'] = product_dict['created_at'].isoformat()
+    await db.shop_products.insert_one(product_dict)
+    return {"message": "Produit créé", "id": new_product.id}
+
+@api_router.put("/admin/shop-products/{product_id}")
+async def update_shop_product(product_id: str, product: ShopProductUpdate):
+    """Update a shop product (admin)"""
+    update_data = {k: v for k, v in product.model_dump().items() if v is not None}
+    if not update_data:
+        raise HTTPException(status_code=400, detail="Aucune donnée à mettre à jour")
+    
+    result = await db.shop_products.update_one({"id": product_id}, {"$set": update_data})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Produit non trouvé")
+    return {"message": "Produit mis à jour"}
+
+@api_router.delete("/admin/shop-products/{product_id}")
+async def delete_shop_product(product_id: str):
+    """Delete a shop product (admin)"""
+    result = await db.shop_products.delete_one({"id": product_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Produit non trouvé")
+    return {"message": "Produit supprimé"}
+
 
 # ============== CART ROUTES ==============
 
@@ -699,7 +870,11 @@ async def stripe_webhook(request: Request):
                             # Refresh appointment data
                             updated_appt = await db.appointments.find_one({"id": appointment_id}, {"_id": 0})
                             if updated_appt:
+                                # Email to customer
                                 await send_appointment_confirmation_email(updated_appt)
+                                # Email to salon
+                                await send_salon_notification(updated_appt)
+                                # WhatsApp notification
                                 await notify_new_appointment(updated_appt)
                         except Exception as notif_error:
                             logger.error(f"Notification error for appointment: {notif_error}")
@@ -795,3 +970,39 @@ async def shutdown_db_client():
     except Exception as e:
         logger.error(f"Error stopping scheduler: {e}")
     client.close()
+
+# Download endpoint for frontend zip
+from fastapi.responses import FileResponse
+import os
+
+@app.get("/download/frontend-v9")
+async def download_frontend():
+    file_path = os.path.join(os.path.dirname(__file__), "kyrios-salon-frontend-v9.zip")
+    return FileResponse(
+        path=file_path,
+        filename="kyrios-salon-frontend-v9.zip",
+        media_type="application/zip"
+    )
+
+@app.get("/api/download/frontend-v13")
+async def download_frontend_v13():
+    file_path = "/app/kyrios-salon-frontend-v13.zip"
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Fichier non trouvé")
+    return FileResponse(
+        path=file_path,
+        filename="kyrios-salon-frontend-v13.zip",
+        media_type="application/zip"
+    )
+
+@app.get("/api/download/frontend-production")
+async def download_frontend_production():
+    file_path = "/app/kyrios-salon-frontend-PRODUCTION.zip"
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Fichier non trouvé")
+    return FileResponse(
+        path=file_path,
+        filename="kyrios-salon-frontend-PRODUCTION.zip",
+        media_type="application/zip"
+    )
+
