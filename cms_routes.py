@@ -103,18 +103,26 @@ class ProductUpdate(BaseModel):
 class HeroContent(BaseModel):
     title: str = "Lyrias'Hair"
     subtitle: str = "Extensions & Perruques de Luxe"
-    background_image: Optional[str] = None
+    background_image: Optional[str] = None  # URL de l'image héros (1920x1080 recommandé)
     cta_button_1_text: str = "Découvrir la Collection"
     cta_button_1_link: str = "/boutique"
     cta_button_2_text: str = "Réserver au Salon"
     cta_button_2_link: str = "#reservation"
 
 
+class SocialLinks(BaseModel):
+    instagram: Optional[str] = None
+    facebook: Optional[str] = None
+    tiktok: Optional[str] = None
+    youtube: Optional[str] = None
+
+
 class SalonInfo(BaseModel):
     address: str = "Rue du Pont-de-Perrette 8, 1700 Fribourg"
     phone: str = "+41 78 848 08 67"
     email: str = "clients@kyrios-salon.ch"
-    instagram: Optional[str] = None
+    salon_image: Optional[str] = None  # URL de l'image du salon (1920x800 recommandé)
+    social_links: SocialLinks = Field(default_factory=SocialLinks)
     hours: Dict[str, str] = {
         "monday": "Fermé",
         "tuesday": "Fermé",
@@ -129,6 +137,7 @@ class SalonInfo(BaseModel):
 class Testimonial(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     client_name: str
+    client_city: Optional[str] = None
     text: str
     rating: int = 5  # 1-5 stars
     is_visible: bool = True
@@ -278,6 +287,20 @@ async def get_site_content():
         content_dict['updated_at'] = content_dict['updated_at'].isoformat()
         await db.site_content.insert_one(content_dict)
         return default_content.model_dump()
+    
+    # Normalize salon_info to include social_links (backwards compatibility)
+    if 'salon_info' in content:
+        salon_info = content['salon_info']
+        if 'social_links' not in salon_info:
+            # Migrate old instagram field to new structure
+            salon_info['social_links'] = {
+                'instagram': salon_info.get('instagram'),
+                'facebook': None,
+                'tiktok': None,
+                'youtube': None
+            }
+        if 'salon_image' not in salon_info:
+            salon_info['salon_image'] = None
     
     return content
 
