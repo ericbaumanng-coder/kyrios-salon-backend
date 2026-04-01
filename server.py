@@ -1006,3 +1006,14 @@ async def download_frontend_production():
         media_type="application/zip"
     )
 
+@app.get("/api/download/backend-railway")
+async def download_backend_railway():
+    file_path = "/app/kyrios-backend-railway.zip"
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Fichier non trouvé")
+    return FileResponse(
+        path=file_path,
+        filename="kyrios-backend-railway.zip",
+        media_type="application/zip"
+    )
+
