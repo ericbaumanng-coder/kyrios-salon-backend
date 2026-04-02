@@ -375,6 +375,84 @@ async def delete_shop_product(product_id: str):
     return {"message": "Produit supprimé"}
 
 
+# ============== MIGRATION: FIX SERVICE VARIATIONS ==============
+
+@api_router.post("/admin/migrate-service-variations")
+async def migrate_service_variations():
+    """
+    Migration: Update service variations with correct French labels
+    - Longueur: Court, Moyen, Long, Très Long, Super Long
+    - Épaisseur: XS, S, M, L, XL
+    """
+    # Mapping old sizes to new French labels
+    length_mapping = {
+        'S': 'Court',
+        'M': 'Moyen', 
+        'L': 'Long'
+    }
+    
+    # New thickness variations to add
+    thickness_variations = [
+        {"name": "XS", "price": 0, "duration_minutes": 0},
+        {"name": "S", "price": 20, "duration_minutes": 30},
+        {"name": "M", "price": 40, "duration_minutes": 60},
+        {"name": "L", "price": 60, "duration_minutes": 90},
+        {"name": "XL", "price": 80, "duration_minutes": 120}
+    ]
+    
+    # Get all services in "Tresses & Coiffures Naturelles" category
+    services = await db.service_models.find({"category_id": "cat_tresses"}).to_list(100)
+    
+    updated_count = 0
+    for service in services:
+        new_variations = []
+        for var in service.get('variations', []):
+            old_size = var.get('size', '')
+            new_size = length_mapping.get(old_size, old_size)
+            new_variations.append({
+                'size': new_size,
+                'price': var.get('price', 0),
+                'duration_minutes': var.get('duration_minutes', 0)
+            })
+        
+        # Add "Très Long" and "Super Long" if not present
+        existing_sizes = [v['size'] for v in new_variations]
+        if 'Très Long' not in existing_sizes and len(new_variations) >= 3:
+            base_price = new_variations[-1]['price'] if new_variations else 160
+            base_duration = new_variations[-1]['duration_minutes'] if new_variations else 300
+            new_variations.append({
+                'size': 'Très Long',
+                'price': base_price + 40,
+                'duration_minutes': base_duration + 60
+            })
+        if 'Super Long' not in existing_sizes and len(new_variations) >= 4:
+            base_price = new_variations[-1]['price'] if new_variations else 200
+            base_duration = new_variations[-1]['duration_minutes'] if new_variations else 360
+            new_variations.append({
+                'size': 'Super Long',
+                'price': base_price + 40,
+                'duration_minutes': base_duration + 60
+            })
+        
+        # Update the service
+        await db.service_models.update_one(
+            {"id": service['id']},
+            {"$set": {
+                "variations": new_variations,
+                "thickness_variations": thickness_variations,
+                "has_thickness": True
+            }}
+        )
+        updated_count += 1
+    
+    return {
+        "message": f"Migration terminée: {updated_count} services mis à jour",
+        "updated_services": updated_count,
+        "new_lengths": ["Court", "Moyen", "Long", "Très Long", "Super Long"],
+        "new_thicknesses": ["XS", "S", "M", "L", "XL"]
+    }
+
+
 # ============== CART ROUTES ==============
 
 def calculate_cart_totals(items: List[CartItem]) -> Dict:
@@ -1014,6 +1092,39 @@ async def download_backend_railway():
     return FileResponse(
         path=file_path,
         filename="kyrios-backend-railway.zip",
+        media_type="application/zip"
+    )
+
+@app.get("/api/download/backend-github-complete")
+async def download_backend_github_complete():
+    file_path = "/app/kyrios-backend-github-complete.zip"
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Fichier non trouvé")
+    return FileResponse(
+        path=file_path,
+        filename="kyrios-backend-github-complete.zip",
+        media_type="application/zip"
+    )
+
+@app.get("/api/download/frontend-final")
+async def download_frontend_final():
+    file_path = "/app/kyrios-salon-frontend-FINAL.zip"
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Fichier non trouvé")
+    return FileResponse(
+        path=file_path,
+        filename="kyrios-salon-frontend-FINAL.zip",
+        media_type="application/zip"
+    )
+
+@app.get("/api/download/backend-v2")
+async def download_backend_v2():
+    file_path = "/app/kyrios-backend-v2.zip"
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Fichier non trouvé")
+    return FileResponse(
+        path=file_path,
+        filename="kyrios-backend-v2.zip",
         media_type="application/zip"
     )
 
