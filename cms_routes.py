@@ -151,12 +151,20 @@ class VisualSettings(BaseModel):
     gold_particles_color: str = "#C9A84C"
 
 
+class SectionImages(BaseModel):
+    """Images for homepage sections - managed from Admin"""
+    raw_hair: Optional[str] = None  # Raw Hair section image
+    salon: Optional[str] = None  # Salon reservation section background
+    bulk_braids: Optional[str] = None  # Bulk for Braids section image
+
+
 class SiteContent(BaseModel):
     id: str = "site_content_main"
     hero: HeroContent = Field(default_factory=HeroContent)
     salon_info: SalonInfo = Field(default_factory=SalonInfo)
     testimonials: List[Testimonial] = []
     visual_settings: VisualSettings = Field(default_factory=VisualSettings)
+    section_images: SectionImages = Field(default_factory=SectionImages)
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -359,6 +367,22 @@ async def update_visual_settings(settings: VisualSettings):
         upsert=True
     )
     return {"message": "Paramètres visuels mis à jour"}
+
+
+@cms_router.put("/admin/site-content/section-images")
+async def update_section_images(images: SectionImages):
+    """Update homepage section images (Raw Hair, Salon, etc.)"""
+    await db.site_content.update_one(
+        {"id": "site_content_main"},
+        {
+            "$set": {
+                "section_images": images.model_dump(),
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }
+        },
+        upsert=True
+    )
+    return {"message": "Images des sections mises à jour"}
 
 
 # ============== TESTIMONIALS ROUTES ==============

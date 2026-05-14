@@ -259,6 +259,51 @@ async def get_product(product_id: str):
         raise HTTPException(status_code=404, detail="Produit non trouvé")
     return product
 
+
+# Admin routes for Products (Extensions)
+class ProductUpdate(BaseModel):
+    name: Optional[str] = None
+    category: Optional[str] = None
+    subcategory: Optional[str] = None
+    description: Optional[str] = None
+    care_instructions: Optional[str] = None
+    image_url: Optional[str] = None
+    prices_by_size: Optional[List[PriceBySize]] = None
+    lace_types: Optional[List[str]] = None
+    is_raw_hair: Optional[bool] = None
+    is_bulk: Optional[bool] = None
+
+
+@api_router.put("/admin/products/{product_id}")
+async def update_product(product_id: str, product: ProductUpdate):
+    """Update a product (extension)"""
+    update_data = {k: v for k, v in product.model_dump().items() if v is not None}
+    if not update_data:
+        raise HTTPException(status_code=400, detail="Aucune donnée à mettre à jour")
+    
+    result = await db.products.update_one({"id": product_id}, {"$set": update_data})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Produit non trouvé")
+    return {"message": "Produit mis à jour avec succès"}
+
+
+@api_router.delete("/admin/products/{product_id}")
+async def delete_product(product_id: str):
+    """Delete a product (extension)"""
+    result = await db.products.delete_one({"id": product_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Produit non trouvé")
+    return {"message": "Produit supprimé avec succès"}
+
+
+@api_router.post("/admin/products")
+async def create_product(product: Product):
+    """Create a new product (extension)"""
+    product_dict = product.model_dump()
+    await db.products.insert_one(product_dict)
+    return {"message": "Produit créé avec succès", "id": product.id}
+
+
 @api_router.get("/categories")
 async def get_categories():
     categories = await db.products.distinct("category")
