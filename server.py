@@ -51,7 +51,11 @@ stripe_api_key = os.environ.get('STRIPE_API_KEY', 'sk_test_emergent')
 stripe.api_key = stripe_api_key
 
 # Create the main app
-app = FastAPI(title="Kyrios Salon / Lyrias'Hair API")
+app = FastAPI(
+    title="Kyrios Salon / Lyrias'Hair API",
+    description="API Backend pour le salon de coiffure Kyrios / Lyrias'Hair",
+    version="2.0.0"
+)
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
@@ -62,6 +66,21 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+# ============== GLOBAL ERROR HANDLER ==============
+
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Handle all unhandled exceptions to prevent server crashes"""
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Une erreur interne s'est produite. Veuillez réessayer."}
+    )
+
 
 # ============== HEALTH CHECK ==============
 
@@ -182,13 +201,20 @@ class PaymentTransaction(BaseModel):
 
 # ============== WIGS (PERRUQUES) MODELS ==============
 
+class MediaItem(BaseModel):
+    """A single media item (image or video)"""
+    type: str = "image"  # "image" or "video"
+    url: str
+    thumbnail_url: Optional[str] = None  # For videos, optional thumbnail
+
 class Wig(BaseModel):
-    """Wig product - no sizes, no colors, unique product"""
+    """Wig product - supports multiple images and videos"""
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     description: Optional[str] = None
-    image_url: str
+    image_url: str  # Primary image (backward compatible)
+    media: List[MediaItem] = []  # Additional images/videos for carousel
     price: float
     is_available: bool = True
     order: int = 0
@@ -198,6 +224,7 @@ class WigCreate(BaseModel):
     name: str
     description: Optional[str] = None
     image_url: str
+    media: List[MediaItem] = []
     price: float
     is_available: bool = True
     order: int = 0
@@ -206,6 +233,7 @@ class WigUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     image_url: Optional[str] = None
+    media: Optional[List[MediaItem]] = None
     price: Optional[float] = None
     is_available: Optional[bool] = None
     order: Optional[int] = None
@@ -292,13 +320,14 @@ async def delete_wig(wig_id: str):
 # ============== SHOP PRODUCTS (PRODUITS CAPILLAIRES) MODELS ==============
 
 class ShopProduct(BaseModel):
-    """Shop product - hair care products (shampoos, creams, oils, etc.)"""
+    """Shop product - hair care products with multi-media support"""
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     description: Optional[str] = None
     category: Optional[str] = None  # Shampoing, Crème, Huile, Sérum, Sèche-cheveux, etc.
-    image_url: str
+    image_url: str  # Primary image (backward compatible)
+    media: List[MediaItem] = []  # Additional images/videos for carousel
     price: float
     is_available: bool = True
     order: int = 0
@@ -309,6 +338,7 @@ class ShopProductCreate(BaseModel):
     description: Optional[str] = None
     category: Optional[str] = None
     image_url: str
+    media: List[MediaItem] = []
     price: float
     is_available: bool = True
     order: int = 0
@@ -318,6 +348,7 @@ class ShopProductUpdate(BaseModel):
     description: Optional[str] = None
     category: Optional[str] = None
     image_url: Optional[str] = None
+    media: Optional[List[MediaItem]] = None
     price: Optional[float] = None
     is_available: Optional[bool] = None
     order: Optional[int] = None
@@ -1019,12 +1050,25 @@ app.include_router(booking_router)
 # Include CMS routes
 app.include_router(cms_router)
 
+# CORS Configuration - PRODUCTION READY
+# Accepts requests from kyrios-salon.ch (with and without www)
+cors_origins_env = os.environ.get('CORS_ORIGINS', 'https://kyrios-salon.ch,https://www.kyrios-salon.ch')
+cors_origins = [origin.strip() for origin in cors_origins_env.split(',') if origin.strip()]
+
+# Add wildcard only in development
+if os.environ.get('ENV', 'production') == 'development':
+    cors_origins.append('*')
+
+logger.info(f"CORS Origins configured: {cors_origins}")
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
-    allow_methods=["*"],
+    allow_origins=cors_origins,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=600,  # Cache preflight requests for 10 minutes
 )
 
 
@@ -1125,6 +1169,94 @@ async def download_backend_v2():
     return FileResponse(
         path=file_path,
         filename="kyrios-backend-v2.zip",
+        media_type="application/zip"
+    )
+
+@app.get("/api/download/FINAL-frontend")
+async def download_final_frontend():
+    file_path = "/app/FRONTEND-FINAL.zip"
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Fichier non trouvé")
+    return FileResponse(
+        path=file_path,
+        filename="FRONTEND-FINAL.zip",
+        media_type="application/zip"
+    )
+
+@app.get("/api/download/FINAL-backend")
+async def download_final_backend():
+    file_path = "/app/BACKEND-FINAL.zip"
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Fichier non trouvé")
+    return FileResponse(
+        path=file_path,
+        filename="BACKEND-FINAL.zip",
+        media_type="application/zip"
+    )
+
+@app.get("/api/download/BACKEND-STABLE")
+async def download_backend_stable():
+    file_path = "/app/BACKEND-STABLE.zip"
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Fichier non trouvé")
+    return FileResponse(
+        path=file_path,
+        filename="BACKEND-STABLE.zip",
+        media_type="application/zip"
+    )
+
+@app.get("/api/download/FRONTEND-VERIFIED")
+async def download_frontend_verified():
+    file_path = "/app/FRONTEND-FINAL-VERIFIED.zip"
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Fichier non trouvé")
+    return FileResponse(
+        path=file_path,
+        filename="FRONTEND-FINAL-VERIFIED.zip",
+        media_type="application/zip"
+    )
+
+@app.get("/api/download/FRONTEND-COMPLETE")
+async def download_frontend_complete():
+    file_path = "/app/FRONTEND-COMPLETE.zip"
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Fichier non trouvé")
+    return FileResponse(
+        path=file_path,
+        filename="FRONTEND-COMPLETE.zip",
+        media_type="application/zip"
+    )
+
+@app.get("/api/download/BACKEND-COMPLETE")
+async def download_backend_complete():
+    file_path = "/app/BACKEND-COMPLETE.zip"
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Fichier non trouvé")
+    return FileResponse(
+        path=file_path,
+        filename="BACKEND-COMPLETE.zip",
+        media_type="application/zip"
+    )
+
+@app.get("/api/download/FRONTEND-SECURE")
+async def download_frontend_secure():
+    file_path = "/app/FRONTEND-SECURE.zip"
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Fichier non trouvé")
+    return FileResponse(
+        path=file_path,
+        filename="FRONTEND-SECURE.zip",
+        media_type="application/zip"
+    )
+
+@app.get("/api/download/BACKEND-SECURE")
+async def download_backend_secure():
+    file_path = "/app/BACKEND-SECURE.zip"
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Fichier non trouvé")
+    return FileResponse(
+        path=file_path,
+        filename="BACKEND-SECURE.zip",
         media_type="application/zip"
     )
 

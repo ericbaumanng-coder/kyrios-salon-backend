@@ -347,11 +347,25 @@ async def get_available_slots(date: str, duration: Optional[int] = None, service
     
     # SMART SLOT LOGIC
     slots = []
+    occupied_slots = []  # For visual display of occupied times
+    info_message = None  # Pedagogical message for the user
+    
+    # Build occupied slots list for visual display
+    for appt in existing_appointments:
+        occupied_slots.append({
+            "start_time": appt["start_time"],
+            "end_time": appt["end_time"],
+            "service_name": appt.get("service_name", "Réservé"),
+            "status": "occupied"
+        })
     
     if len(existing_appointments) == 0:
         # NO APPOINTMENTS YET: First booking MUST be at opening time
         slot_start = minutes_to_time(opening_minutes)
         slot_end = minutes_to_time(opening_minutes + service_duration)
+        
+        # Pedagogical message for first booking
+        info_message = f"📍 Premier créneau à {slot_start} (ouverture). Pour une organisation optimale, les réservations commencent à l'heure d'ouverture."
         
         # For today, check if opening time is still in the future
         is_available = True
@@ -365,7 +379,8 @@ async def get_available_slots(date: str, duration: Optional[int] = None, service
                 "start_time": slot_start,
                 "end_time": slot_end,
                 "is_available": True,
-                "slot_info": "Premier créneau de la journée"
+                "slot_info": "Premier créneau de la journée",
+                "status": "available"
             })
     else:
         # APPOINTMENTS EXIST: Find slots that start immediately after existing appointments
@@ -389,7 +404,8 @@ async def get_available_slots(date: str, duration: Optional[int] = None, service
                         "start_time": slot_start,
                         "end_time": slot_end,
                         "is_available": True,
-                        "slot_info": "Créneau d'ouverture"
+                        "slot_info": "Créneau d'ouverture",
+                        "status": "available"
                     })
         
         # Then, check slots after each existing appointment
@@ -423,8 +439,13 @@ async def get_available_slots(date: str, duration: Optional[int] = None, service
                         "start_time": slot_start,
                         "end_time": slot_end,
                         "is_available": True,
-                        "slot_info": f"Suite au RDV de {appt.get('customer_name', 'client').split()[0]}"
+                        "slot_info": f"Suite au RDV précédent",
+                        "status": "available"
                     })
+    
+    # Calculate last possible slot time for pedagogical message
+    last_possible_slot_minutes = closing_minutes - service_duration
+    last_possible_slot_time = minutes_to_time(last_possible_slot_minutes)
     
     # If no slots are available
     if len(slots) == 0:
@@ -437,17 +458,28 @@ async def get_available_slots(date: str, duration: Optional[int] = None, service
             if remaining_time > 0 and remaining_time < service_duration:
                 return {
                     "slots": [], 
-                    "message": f"Il reste {remaining_time} min après le dernier RDV, insuffisant pour cette prestation ({service_duration} min)",
-                    "suggestion": "Essayez un autre jour ou une prestation plus courte"
+                    "occupied_slots": occupied_slots,
+                    "message": f"⏰ Votre prestation dure {service_duration} min. Il reste {remaining_time} min avant la fermeture ({availability['end_time']}). Le dernier créneau possible serait à {last_possible_slot_time}.",
+                    "suggestion": "Choisissez une prestation plus courte ou un autre jour.",
+                    "salon_hours": f"{availability['start_time']} - {availability['end_time']}"
                 }
         
-        return {"slots": [], "message": "Aucun créneau disponible pour cette date"}
+        return {
+            "slots": [], 
+            "occupied_slots": occupied_slots,
+            "message": "Aucun créneau disponible pour cette date",
+            "salon_hours": f"{availability['start_time']} - {availability['end_time']}"
+        }
     
     return {
         "slots": slots, 
+        "occupied_slots": occupied_slots,
         "date": date, 
         "service_duration": service_duration,
         "salon_hours": f"{availability['start_time']} - {availability['end_time']}",
+        "closing_time": availability['end_time'],
+        "last_possible_slot": last_possible_slot_time,
+        "info_message": info_message,
         "smart_booking": True
     }
 

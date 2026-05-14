@@ -144,11 +144,19 @@ class Testimonial(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class VisualSettings(BaseModel):
+    """Visual settings for the website"""
+    gold_particles_enabled: bool = True
+    gold_particles_density: int = 50  # 0-100
+    gold_particles_color: str = "#C9A84C"
+
+
 class SiteContent(BaseModel):
     id: str = "site_content_main"
     hero: HeroContent = Field(default_factory=HeroContent)
     salon_info: SalonInfo = Field(default_factory=SalonInfo)
     testimonials: List[Testimonial] = []
+    visual_settings: VisualSettings = Field(default_factory=VisualSettings)
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -335,6 +343,22 @@ async def update_salon_info(salon_info: SalonInfo):
         upsert=True
     )
     return {"message": "Informations salon mises à jour"}
+
+
+@cms_router.put("/admin/site-content/visual-settings")
+async def update_visual_settings(settings: VisualSettings):
+    """Update visual settings (gold particles, etc.)"""
+    await db.site_content.update_one(
+        {"id": "site_content_main"},
+        {
+            "$set": {
+                "visual_settings": settings.model_dump(),
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }
+        },
+        upsert=True
+    )
+    return {"message": "Paramètres visuels mis à jour"}
 
 
 # ============== TESTIMONIALS ROUTES ==============
