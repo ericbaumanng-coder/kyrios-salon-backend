@@ -1355,3 +1355,25 @@ async def download_backend_secure():
         media_type="application/zip"
     )
 
+@app.get("/api/download/FRONTEND-PRODUCTION-STABLE")
+async def download_frontend_production_stable():
+    file_path = "/app/FRONTEND-PRODUCTION-STABLE.zip"
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Fichier non trouvé")
+    return FileResponse(
+        path=file_path,
+        filename="FRONTEND-PRODUCTION-STABLE.zip",
+        media_type="application/zip"
+    )
+
+@app.get("/api/download/BACKEND-PRODUCTION-STABLE")
+async def download_backend_production_stable():
+    file_path = "/app/BACKEND-PRODUCTION-STABLE.zip"
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Fichier non trouvé")
+    return FileResponse(
+        path=file_path,
+        filename="BACKEND-PRODUCTION-STABLE.zip",
+        media_type="application/zip"
+    )
+
