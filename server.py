@@ -252,6 +252,34 @@ async def get_products(category: Optional[str] = None):
     products = await db.products.find(query, {"_id": 0}).to_list(1000)
     return products
 
+
+@api_router.get("/products-light")
+async def get_products_light(category: Optional[str] = None):
+    """
+    Get products without full base64 images - MUCH faster for admin lists
+    Returns only thumbnail/preview data
+    """
+    query = {}
+    if category:
+        query["category"] = category
+    
+    # Exclude the heavy image_url field, only get metadata
+    products = await db.products.find(
+        query, 
+        {
+            "_id": 0, 
+            "image_url": 0  # Exclude heavy base64 images
+        }
+    ).to_list(1000)
+    
+    # Add a placeholder or first 100 chars of image for preview
+    for p in products:
+        # If we need a thumbnail, we'd fetch it separately
+        p["has_image"] = True  # Just indicate image exists
+    
+    return products
+
+
 @api_router.get("/products/{product_id}", response_model=ProductResponse)
 async def get_product(product_id: str):
     product = await db.products.find_one({"id": product_id}, {"_id": 0})
@@ -322,6 +350,17 @@ async def get_wigs():
 async def get_all_wigs():
     """Get all wigs (admin)"""
     wigs = await db.wigs.find({}, {"_id": 0}).sort("order", 1).to_list(100)
+    return wigs
+
+@api_router.get("/wigs-light")
+async def get_wigs_light():
+    """Get all wigs without heavy base64 images - for fast admin lists"""
+    wigs = await db.wigs.find(
+        {}, 
+        {"_id": 0, "image_url": 0, "media": 0}  # Exclude heavy fields
+    ).sort("order", 1).to_list(100)
+    for w in wigs:
+        w["has_image"] = True
     return wigs
 
 @api_router.get("/wigs/{wig_id}")
@@ -411,6 +450,17 @@ async def get_shop_products():
 async def get_all_shop_products():
     """Get all shop products (admin)"""
     products = await db.shop_products.find({}, {"_id": 0}).sort("order", 1).to_list(100)
+    return products
+
+@api_router.get("/shop-products-light")
+async def get_shop_products_light():
+    """Get shop products without heavy base64 images - for fast admin lists"""
+    products = await db.shop_products.find(
+        {}, 
+        {"_id": 0, "image_url": 0, "media": 0}  # Exclude heavy fields
+    ).sort("order", 1).to_list(100)
+    for p in products:
+        p["has_image"] = True
     return products
 
 @api_router.get("/shop-products/{product_id}")

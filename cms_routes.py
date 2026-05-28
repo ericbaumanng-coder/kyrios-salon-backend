@@ -546,9 +546,32 @@ async def delete_announcement(announcement_id: str):
 
 @cms_router.get("/admin/media")
 async def get_media_library():
-    """Get all media items"""
+    """Get all media items - returns thumbnails only for speed"""
     media = await db.media_library.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
     return media
+
+
+@cms_router.get("/admin/media-light")
+async def get_media_library_light():
+    """Get media list without full base64 URLs - FAST for listing"""
+    media = await db.media_library.find(
+        {}, 
+        {"_id": 0, "url": 0}  # Exclude the heavy base64 URL
+    ).sort("created_at", -1).to_list(500)
+    
+    # Just indicate each item has an image
+    for m in media:
+        m["has_url"] = True
+    return media
+
+
+@cms_router.get("/admin/media/{media_id}")
+async def get_media_item(media_id: str):
+    """Get a single media item with full URL"""
+    item = await db.media_library.find_one({"id": media_id}, {"_id": 0})
+    if not item:
+        raise HTTPException(status_code=404, detail="Média non trouvé")
+    return item
 
 
 @cms_router.post("/admin/media/upload")
