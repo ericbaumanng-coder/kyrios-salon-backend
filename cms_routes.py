@@ -552,39 +552,37 @@ async def get_media_library():
 
 
 @cms_router.post("/admin/media/upload")
-async def upload_media(file_data: str = Form(...), filename: str = Form(...)):
+async def upload_media(file: UploadFile = File(...)):
     """
-    Upload a media file (base64 encoded)
-    In production, this would upload to cloud storage
-    For demo, we store base64 and generate a data URL
+    Upload a media file (image)
+    Accepts actual file upload via multipart/form-data
+    Stores as base64 data URL in MongoDB
     """
     try:
         # Validate file type
-        allowed_types = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg']
+        allowed_types = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg', 'image/gif']
         
-        # Parse base64 data
-        if ',' in file_data:
-            header, data = file_data.split(',', 1)
-            file_type = header.split(';')[0].split(':')[1] if ':' in header else 'image/jpeg'
-        else:
-            data = file_data
-            file_type = 'image/jpeg'
+        if file.content_type not in allowed_types:
+            raise HTTPException(status_code=400, detail=f"Type de fichier non autorisé: {file.content_type}")
         
-        if file_type not in allowed_types:
-            raise HTTPException(status_code=400, detail="Type de fichier non autorisé")
-        
-        # Calculate file size
-        file_size = len(base64.b64decode(data))
+        # Read file content
+        content = await file.read()
+        file_size = len(content)
         
         # Max 5MB
         if file_size > 5 * 1024 * 1024:
             raise HTTPException(status_code=400, detail="Fichier trop volumineux (max 5 MB)")
         
+        # Convert to base64 data URL
+        import base64
+        b64_data = base64.b64encode(content).decode('utf-8')
+        data_url = f"data:{file.content_type};base64,{b64_data}"
+        
         # Create media item
         media_item = MediaItem(
-            filename=filename,
-            url=file_data,  # Store as data URL for demo
-            file_type=file_type,
+            filename=file.filename,
+            url=data_url,
+            file_type=file.content_type,
             file_size=file_size
         )
         
