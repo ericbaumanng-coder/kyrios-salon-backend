@@ -18,6 +18,9 @@ import base64
 from pathlib import Path
 from dotenv import load_dotenv
 
+# Import image storage service
+from image_storage import save_image_file, delete_image_file, is_base64_image, base64_to_file, compress_image
+
 logger = logging.getLogger(__name__)
 
 # Load environment variables
@@ -578,12 +581,11 @@ async def get_media_item(media_id: str):
 async def upload_media(file: UploadFile = File(...)):
     """
     Upload a media file (image)
-    Accepts actual file upload via multipart/form-data
-    Stores as base64 data URL in MongoDB
+    Saves to file system with compression AND keeps base64 backup in MongoDB
     """
     try:
         # Validate file type
-        allowed_types = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg', 'image/gif']
+        allowed_types = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg', 'image/gif', 'image/heic', 'image/heif']
         
         if file.content_type not in allowed_types:
             raise HTTPException(status_code=400, detail=f"Type de fichier non autorisé: {file.content_type}")
@@ -592,32 +594,67 @@ async def upload_media(file: UploadFile = File(...)):
         content = await file.read()
         file_size = len(content)
         
-        # Max 5MB
-        if file_size > 5 * 1024 * 1024:
-            raise HTTPException(status_code=400, detail="Fichier trop volumineux (max 5 MB)")
+        # Max 10MB for original (will be compressed)
+        if file_size > 10 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="Fichier trop volumineux (max 10 MB)")
         
-        # Convert to base64 data URL
+        # Compress the image
+        compressed_data, compressed_type = compress_image(content, file.content_type)
+        compressed_size = len(compressed_data)
+        
+        # Create base64 of COMPRESSED image (much smaller than original)
         import base64
-        b64_data = base64.b64encode(content).decode('utf-8')
-        data_url = f"data:{file.content_type};base64,{b64_data}"
+        b64_compressed = base64.b64encode(compressed_data).decode('utf-8')
+        data_url = f"data:{compressed_type};base64,{b64_compressed}"
         
-        # Create media item
+        # Generate unique filename
+        unique_filename = f"{uuid.uuid4().hex}.webp"
+        
+        # Get the backend URL for the image
+        backend_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', '')
+        if backend_url and not backend_url.startswith('http'):
+            backend_url = f"https://{backend_url}"
+        if not backend_url:
+            backend_url = "https://kyrios-salon-backend-production.up.railway.app"
+        
+        file_url = f"{backend_url}/api/uploads/{unique_filename}"
+        
+        # Try to save to file system (may not persist on Railway without volumes)
+        try:
+            filename = save_image_file(compressed_data, unique_filename, compressed_type, compress=False)
+            logger.info(f"Saved to file: {filename}")
+        except Exception as e:
+            logger.warning(f"Could not save to file system: {e}")
+        
+        # Create media item with compressed base64 (fallback) and file URL
         media_item = MediaItem(
-            filename=file.filename,
-            url=data_url,
-            file_type=file.content_type,
-            file_size=file_size
+            filename=unique_filename,
+            url=data_url,  # Store compressed base64 as primary (reliable)
+            file_type=compressed_type,
+            file_size=compressed_size
         )
         
         media_dict = media_item.model_dump()
         media_dict['created_at'] = media_dict['created_at'].isoformat()
+        media_dict['original_filename'] = file.filename
+        media_dict['original_size'] = file_size
+        media_dict['file_url'] = file_url  # Also store file URL
+        media_dict['storage_type'] = 'compressed_base64'
         
         await db.media_library.insert_one(media_dict)
         
+        compression_ratio = round((1 - compressed_size / file_size) * 100, 1)
+        logger.info(f"Image uploaded: {file.filename} - Compressed {compression_ratio}% ({file_size} -> {compressed_size} bytes)")
+        
         return {
             "id": media_item.id,
-            "url": media_item.url,
-            "message": "Image uploadée avec succès"
+            "url": data_url,
+            "file_url": file_url,
+            "filename": unique_filename,
+            "original_size": file_size,
+            "compressed_size": compressed_size,
+            "compression_ratio": f"{compression_ratio}%",
+            "message": "Image uploadée et compressée avec succès"
         }
         
     except Exception as e:
@@ -681,3 +718,73 @@ async def log_notification(
     await db.notification_logs.insert_one(log_dict)
     
     return log.id
+
+
+
+# ============== IMAGE MIGRATION ENDPOINT ==============
+
+@cms_router.post("/admin/migrate-images")
+async def migrate_images_to_file_storage():
+    """
+    Compress all base64 images in the database
+    This reduces loading times significantly
+    """
+    from compress_images import run_compression
+    
+    try:
+        logger.info("Starting image compression...")
+        total_docs, total_saved = await run_compression()
+        saved_mb = round(total_saved / (1024 * 1024), 2)
+        
+        return {
+            "success": True,
+            "message": f"Compression terminée: {total_docs} documents mis à jour, {saved_mb} MB économisés",
+            "documents_updated": total_docs,
+            "space_saved_mb": saved_mb
+        }
+    except Exception as e:
+        logger.error(f"Compression error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@cms_router.get("/admin/storage-stats")
+async def get_storage_stats():
+    """Get statistics about image storage"""
+    from image_storage import UPLOADS_DIR
+    
+    # Count files in uploads directory
+    file_count = 0
+    total_size = 0
+    
+    if UPLOADS_DIR.exists():
+        for f in UPLOADS_DIR.iterdir():
+            if f.is_file():
+                file_count += 1
+                total_size += f.stat().st_size
+    
+    # Count base64 images still in database
+    base64_count = 0
+    
+    # Check media_library
+    async for doc in db.media_library.find({"storage_type": {"$ne": "file"}}):
+        if doc.get('url', '').startswith('data:'):
+            base64_count += 1
+    
+    # Check products
+    async for doc in db.products.find({}):
+        if doc.get('image_url', '').startswith('data:'):
+            base64_count += 1
+    
+    # Check wigs
+    async for doc in db.wigs.find({}):
+        if doc.get('image_url', '').startswith('data:'):
+            base64_count += 1
+    
+    return {
+        "file_storage": {
+            "count": file_count,
+            "total_size_mb": round(total_size / (1024 * 1024), 2)
+        },
+        "base64_remaining": base64_count,
+        "migration_needed": base64_count > 0
+    }

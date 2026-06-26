@@ -1355,6 +1355,17 @@ async def download_backend_secure():
         media_type="application/zip"
     )
 
+@app.get("/api/download/FRONTEND-PRODUCTION-FINAL")
+async def download_frontend_production_final():
+    file_path = "/app/FRONTEND-PRODUCTION-FINAL.zip"
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Fichier non trouvé")
+    return FileResponse(
+        path=file_path,
+        filename="FRONTEND-PRODUCTION-FINAL.zip",
+        media_type="application/zip"
+    )
+
 @app.get("/api/download/FRONTEND-PRODUCTION-STABLE")
 async def download_frontend_production_stable():
     file_path = "/app/FRONTEND-PRODUCTION-STABLE.zip"
@@ -1377,3 +1388,40 @@ async def download_backend_production_stable():
         media_type="application/zip"
     )
 
+
+
+# ============== IMAGE FILE SERVING ==============
+from image_storage import get_image_path, UPLOADS_DIR
+
+@app.get("/api/uploads/{filename}")
+async def serve_uploaded_image(filename: str):
+    """Serve uploaded images from the file system"""
+    from fastapi.responses import FileResponse
+    
+    # Security: prevent directory traversal
+    if '..' in filename or '/' in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    
+    file_path = get_image_path(filename)
+    if not file_path:
+        raise HTTPException(status_code=404, detail="Image not found")
+    
+    # Determine content type
+    ext = filename.lower().split('.')[-1]
+    content_types = {
+        'jpg': 'image/jpeg',
+        'jpeg': 'image/jpeg',
+        'png': 'image/png',
+        'webp': 'image/webp',
+        'gif': 'image/gif'
+    }
+    content_type = content_types.get(ext, 'image/webp')
+    
+    return FileResponse(
+        path=file_path,
+        media_type=content_type,
+        headers={
+            "Cache-Control": "public, max-age=31536000",  # Cache for 1 year
+            "Access-Control-Allow-Origin": "*"
+        }
+    )
